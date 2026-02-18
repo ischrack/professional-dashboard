@@ -14,6 +14,12 @@ export interface LLMRequest {
   systemPrompt: string
 }
 
+export interface SearchEvent {
+  type: 'search_start' | 'search_complete'
+  query: string | null
+  provider: 'anthropic' | 'openai'
+}
+
 export interface LLMResponse {
   content: string
   inputTokens?: number
@@ -35,12 +41,14 @@ export interface AppSettings {
   imapTls: boolean
   imapForwardingAddress: string
   linkedinPartition: string
+  interviewResearchDepth: 'quick' | 'deep' | 'always_ask'
   models: {
     postGenerator: string
     paperDiscovery: string
     resumeGenerator: string
     coverLetterGenerator: string
     qaGenerator: string
+    interviewResearch: string
   }
 }
 
@@ -55,8 +63,26 @@ export interface ResumeBase {
 
 // ─── Post Generator ──────────────────────────────────────────────────────────
 
+export interface PostSource {
+  id: string
+  role: 'primary' | 'context'
+  type: 'url' | 'text'
+  url?: string
+  text?: string
+  preview?: {
+    title: string
+    authors: string
+    journal: string
+    abstract: string
+  }
+  isFetching?: boolean
+}
+
 export interface PostSession {
   id: number
+  title?: string
+  sources: PostSource[]
+  // Legacy fields — kept for backward-compat reading
   sourceUrl?: string
   sourceText?: string
   paperTitle?: string
@@ -153,6 +179,8 @@ export interface ApplicationMaterial {
   updatedAt: string
 }
 
+export type QATemplateCategory = 'behavioral' | 'technical' | 'culture_fit' | 'role_specific' | 'curveball' | null
+
 export interface QAEntry {
   id: number
   jobId: number
@@ -161,7 +189,68 @@ export interface QAEntry {
   charLimit?: number
   isTemplate: boolean
   templateName?: string
+  category: QATemplateCategory
   createdAt: string
+}
+
+// ─── Interview Prep ───────────────────────────────────────────────────────────
+
+export interface InterviewBrief {
+  id: number
+  jobId: number
+  depth: 'quick' | 'deep'
+  content: string
+  sources: string[]
+  searchCount: number
+  briefVersion: number
+  partial: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export type InterviewMode = 'live_feedback' | 'full_run'
+export type InterviewSessionStatus = 'in_progress' | 'paused' | 'completed'
+export type InterviewCategory =
+  | 'behavioral'
+  | 'technical'
+  | 'culture_fit'
+  | 'role_specific'
+  | 'curveball'
+  | 'questions_to_ask'
+
+export interface InterviewSession {
+  id: number
+  jobId: number
+  mode: InterviewMode
+  categories: InterviewCategory[]
+  briefVersion: number | null
+  status: InterviewSessionStatus
+  debriefText?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface InterviewExchange {
+  id: number
+  sessionId: number
+  sequence: number
+  questionText: string
+  answerText: string
+  feedbackJson?: string
+  createdAt: string
+}
+
+export interface LiveFeedbackBlock {
+  strength: string
+  improvement: string
+  suggestedRefinement?: string
+}
+
+export interface LiveFeedbackResponse {
+  feedback: LiveFeedbackBlock | null
+  nextQuestion: string | null
+  sessionComplete: boolean
+  questionType?: InterviewCategory
 }
 
 export interface JobNote {
@@ -247,11 +336,25 @@ export const IPC = {
   JOB_EXPORT_PDF: 'job:exportPdf',
   JOB_FETCH_COMPANY_PAGE: 'job:fetchCompanyPage',
   JOB_OPEN_FILE: 'job:openFile',
+  JOB_PREVIEW_URL: 'job:previewUrl',
 
   // Application Tracker
   TRACKER_GET_ALL: 'tracker:getAll',
   TRACKER_UPDATE_STATUS: 'tracker:updateStatus',
   TRACKER_DELETE: 'tracker:delete',
+
+  // Interview Prep
+  INTERVIEW_GET_BRIEF: 'interview:getBrief',
+  INTERVIEW_SAVE_BRIEF: 'interview:saveBrief',
+  INTERVIEW_GET_SESSIONS: 'interview:getSessions',
+  INTERVIEW_GET_SESSION: 'interview:getSession',
+  INTERVIEW_CREATE_SESSION: 'interview:createSession',
+  INTERVIEW_UPDATE_SESSION: 'interview:updateSession',
+  INTERVIEW_SAVE_EXCHANGE: 'interview:saveExchange',
+  INTERVIEW_GET_EXCHANGES: 'interview:getExchanges',
+  INTERVIEW_DELETE_SESSION: 'interview:deleteSession',
+  INTERVIEW_APPEND_NOTES: 'interview:appendNotes',
+  INTERVIEW_HAS_ACTIVE: 'interview:hasActive',
 
   // System
   OPEN_FOLDER_PICKER: 'system:openFolderPicker',

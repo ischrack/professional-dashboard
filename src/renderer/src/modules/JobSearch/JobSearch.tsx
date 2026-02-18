@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react'
 import {
   Plus, RefreshCw, Loader2, Briefcase,
-  Mail, AlertCircle
+  Mail, AlertCircle, Search
 } from 'lucide-react'
 import clsx from 'clsx'
+import { useLocation } from 'react-router-dom'
 import { useToast } from '../../shared/hooks/useToast'
 import type { Job } from '@shared/types'
 import JobCard from './JobCard'
@@ -12,19 +13,35 @@ import QuickAddModal from './QuickAddModal'
 
 export default function JobSearch() {
   const { toast } = useToast()
+  const location = useLocation()
   const [jobs, setJobs] = useState<Job[]>([])
   const [loading, setLoading] = useState(false)
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
+  const [initialTab, setInitialTab] = useState<'interview' | undefined>(undefined)
   const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set())
   const [enriching, setEnriching] = useState(false)
   const [enrichProgress, setEnrichProgress] = useState('')
   const [imapPolling, setImapPolling] = useState(false)
   const [quickAddOpen, setQuickAddOpen] = useState(false)
   const [filter, setFilter] = useState<string>('all')
+  const [searchQuery, setSearchQuery] = useState('')
 
   useEffect(() => {
     loadJobs()
   }, [])
+
+  // Handle sidebar Interview Prep shortcut navigation
+  useEffect(() => {
+    const state = location.state as { openJobId?: number; openTab?: string } | null
+    if (state?.openJobId && state?.openTab === 'interview') {
+      setInitialTab('interview')
+      // Select the job after jobs are loaded
+      if (jobs.length > 0) {
+        const target = jobs.find(j => j.id === state.openJobId)
+        if (target) setSelectedJob(target)
+      }
+    }
+  }, [location.state, jobs])
 
   async function loadJobs() {
     setLoading(true)
@@ -57,10 +74,18 @@ export default function JobSearch() {
     setEnriching(true)
     setEnrichProgress(`Enriching ${ids.length} jobs...`)
     try {
-      const results = await window.api.jobEnrich(ids) as Record<number, { success: boolean; error?: string }>
+      const raw = await window.api.jobEnrich(ids) as Record<string, unknown>
+      if (raw && 'error' in raw) {
+        toast('error', raw.error as string)
+        return
+      }
+      const results = raw as Record<number, { success: boolean; error?: string }>
       const succeeded = Object.values(results).filter(r => r.success).length
       const failed = ids.length - succeeded
-      toast(failed > 0 ? 'info' : 'success', `Enriched ${succeeded}/${ids.length} jobs${failed > 0 ? ` (${failed} failed)` : ''}`)
+      toast(
+        succeeded === 0 ? 'error' : failed > 0 ? 'info' : 'success',
+        `Enriched ${succeeded}/${ids.length} jobs${failed > 0 ? ` (${failed} failed)` : ''}`
+      )
       setCheckedIds(new Set())
       await loadJobs()
     } catch (err) {
@@ -88,6 +113,7 @@ export default function JobSearch() {
     const newJob = await window.api.jobGetById(id) as Job
     setSelectedJob(newJob)
     toast('success', 'Job added')
+    window.dispatchEvent(new CustomEvent('jobs-changed'))
   }
 
   async function handleJobUpdated() {
@@ -98,12 +124,20 @@ export default function JobSearch() {
     }
   }
 
-  const filtered = jobs.filter(j => {
-    if (filter === 'all') return true
-    if (filter === 'needs_enrichment') return j.status === 'needs_enrichment' || j.status === 'enrichment_failed'
-    if (filter === 'applied') return j.appliedAt
-    return j.status === filter
-  })
+  const filtered = jobs
+    .filter(j => {
+      if (filter === 'all') return true
+      if (filter === 'needs_enrichment') return j.status === 'needs_enrichment' || j.status === 'enrichment_failed'
+      if (filter === 'applied') return j.appliedAt
+      return j.status === filter
+    })
+    .filter(j => {
+      if (!searchQuery.trim()) return true
+      const q = searchQuery.toLowerCase()
+      return j.title.toLowerCase().includes(q) ||
+             j.company.toLowerCase().includes(q) ||
+             (j.location?.toLowerCase() || '').includes(q)
+    })
 
   const needsEnrichmentCount = jobs.filter(j => j.status === 'needs_enrichment').length
 
@@ -147,6 +181,17 @@ export default function JobSearch() {
               )}
             </div>
           )}
+
+          {/* Search bar */}
+          <div className="relative mt-2">
+            <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-dim pointer-events-none" />
+            <input
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Search jobs..."
+              className="input w-full pl-7 text-xs"
+            />
+          </div>
 
           {/* Status filter */}
           <div className="flex flex-wrap gap-1 mt-2">
@@ -199,6 +244,7 @@ export default function JobSearch() {
           <ApplicationWorkspace
             job={selectedJob}
             onJobUpdated={handleJobUpdated}
+            initialTab={initialTab}
           />
         ) : (
           <div className="flex flex-col items-center justify-center h-full text-text-dim">

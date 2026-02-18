@@ -1,7 +1,8 @@
-import { app, BrowserWindow, WebContentsView, shell, ipcMain, dialog, safeStorage, nativeTheme } from 'electron'
+import { app, BrowserWindow, WebContentsView, shell, ipcMain, dialog, safeStorage, nativeTheme, nativeImage } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { openDatabase, closeDatabase } from './db'
+import { runMigrations } from './db/schema'
 import { registerSettingsHandlers } from './ipc/settings'
 import { registerLlmHandlers } from './ipc/llm'
 import { registerPostHandlers } from './ipc/post'
@@ -9,12 +10,14 @@ import { registerPaperHandlers } from './ipc/papers'
 import { registerJobHandlers } from './ipc/jobs'
 import { registerTrackerHandlers } from './ipc/tracker'
 import { registerSystemHandlers } from './ipc/system'
+import { registerInterviewHandlers } from './ipc/interview'
 
 nativeTheme.themeSource = 'dark'
 
 let mainWindow: BrowserWindow | null = null
 let linkedinView: WebContentsView | null = null
 let linkedinVisible = false
+let isQuitting = false
 
 export function getMainWindow(): BrowserWindow | null {
   return mainWindow
@@ -25,6 +28,12 @@ export function getLinkedinView(): WebContentsView | null {
 }
 
 function createWindow(): void {
+  // Resolve icon path — build/icon.icns in prod, build/icon.png in dev
+  const iconPath = join(
+    app.isPackaged ? process.resourcesPath : join(__dirname, '../../build'),
+    process.platform === 'darwin' ? 'icon.icns' : 'icon.png'
+  )
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -33,6 +42,7 @@ function createWindow(): void {
     show: false,
     autoHideMenuBar: true,
     backgroundColor: '#1a1a1a',
+    icon: iconPath,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -41,9 +51,18 @@ function createWindow(): void {
     },
   })
 
-  // macOS: hide window on close (minimize to dock)
+  // macOS: set custom dock icon (especially visible in dev mode)
+  if (process.platform === 'darwin') {
+    const dockIcon = nativeImage.createFromPath(join(
+      app.isPackaged ? process.resourcesPath : join(__dirname, '../../build'),
+      'icon.png'
+    ))
+    if (!dockIcon.isEmpty()) app.dock?.setIcon(dockIcon)
+  }
+
+  // macOS: clicking the red X hides to dock; only Quit (Cmd+Q / menu) fully exits
   mainWindow.on('close', (e) => {
-    if (process.platform === 'darwin') {
+    if (process.platform === 'darwin' && !isQuitting) {
       e.preventDefault()
       mainWindow?.hide()
     }
@@ -81,7 +100,8 @@ app.whenReady().then(() => {
   })
 
   // Initialize DB
-  openDatabase()
+  const db = openDatabase()
+  runMigrations(db)
 
   // Register all IPC handlers
   registerSettingsHandlers()
@@ -91,6 +111,7 @@ app.whenReady().then(() => {
   registerJobHandlers()
   registerTrackerHandlers()
   registerSystemHandlers()
+  registerInterviewHandlers()
 
   createWindow()
 
@@ -131,5 +152,6 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  isQuitting = true
   closeDatabase()
 })

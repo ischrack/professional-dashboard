@@ -132,6 +132,44 @@ export function initializeDatabase(db: Database.Database): void {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- Interview briefs (one per job)
+    CREATE TABLE IF NOT EXISTS interview_briefs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id INTEGER NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
+      depth TEXT NOT NULL DEFAULT 'quick',
+      content TEXT NOT NULL DEFAULT '',
+      sources TEXT NOT NULL DEFAULT '[]',
+      search_count INTEGER NOT NULL DEFAULT 0,
+      brief_version INTEGER NOT NULL DEFAULT 1,
+      partial INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Interview sessions
+    CREATE TABLE IF NOT EXISTS interview_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      mode TEXT NOT NULL DEFAULT 'live_feedback',
+      categories TEXT NOT NULL DEFAULT '[]',
+      brief_version INTEGER,
+      status TEXT NOT NULL DEFAULT 'in_progress',
+      debrief_text TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Interview exchanges (individual Q&A turns within a session)
+    CREATE TABLE IF NOT EXISTS interview_exchanges (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL REFERENCES interview_sessions(id) ON DELETE CASCADE,
+      sequence INTEGER NOT NULL,
+      question_text TEXT NOT NULL,
+      answer_text TEXT NOT NULL DEFAULT '',
+      feedback_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     -- Indexes
     CREATE INDEX IF NOT EXISTS idx_papers_doi ON papers(doi);
     CREATE INDEX IF NOT EXISTS idx_papers_pmid ON papers(pmid);
@@ -140,7 +178,26 @@ export function initializeDatabase(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_jobs_added_at ON jobs(added_at);
     CREATE INDEX IF NOT EXISTS idx_post_sessions_updated ON post_sessions(updated_at);
     CREATE INDEX IF NOT EXISTS idx_qa_templates ON qa_entries(is_template);
+    CREATE INDEX IF NOT EXISTS idx_interview_sessions_job ON interview_sessions(job_id);
+    CREATE INDEX IF NOT EXISTS idx_interview_exchanges_session ON interview_exchanges(session_id);
   `)
+}
+
+export function runMigrations(db: Database.Database): void {
+  // Add category column to qa_entries if it doesn't exist
+  const qaColumns = db.pragma('table_info(qa_entries)') as { name: string }[]
+  if (!qaColumns.some(c => c.name === 'category')) {
+    db.exec(`ALTER TABLE qa_entries ADD COLUMN category TEXT`)
+  }
+
+  // Add sources + title columns to post_sessions if they don't exist
+  const postCols = db.pragma('table_info(post_sessions)') as { name: string }[]
+  if (!postCols.some(c => c.name === 'sources')) {
+    db.exec(`ALTER TABLE post_sessions ADD COLUMN sources TEXT NOT NULL DEFAULT '[]'`)
+  }
+  if (!postCols.some(c => c.name === 'title')) {
+    db.exec(`ALTER TABLE post_sessions ADD COLUMN title TEXT`)
+  }
 }
 
 export function prunePostSessions(db: Database.Database, keepCount = 20): void {

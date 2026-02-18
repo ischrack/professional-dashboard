@@ -2,8 +2,7 @@ import { ipcMain } from 'electron'
 import { getDb } from '../db'
 import { prunePostSessions } from '../db/schema'
 import { IPC } from '../../shared/types'
-import type { PostSession } from '../../shared/types'
-import fetch from 'node-fetch'
+import type { PostSession, PostSource } from '../../shared/types'
 import * as cheerio from 'cheerio'
 import path from 'path'
 import { getEncryptedKey } from './settings'
@@ -12,60 +11,79 @@ export function registerPostHandlers(): void {
   ipcMain.handle(IPC.POST_GET_SESSIONS, () => {
     const db = getDb()
     const rows = db.prepare(
-      `SELECT id, paper_title, paper_authors, current_post, word_count, created_at, updated_at FROM post_sessions ORDER BY updated_at DESC LIMIT 20`
+      `SELECT id, title, paper_title, paper_authors, current_post, word_count,
+              created_at as createdAt, updated_at as updatedAt
+       FROM post_sessions ORDER BY updated_at DESC LIMIT 50`
     ).all() as PostSession[]
     return rows
   })
 
   ipcMain.handle(IPC.POST_GET_SESSION, (_evt, id: number) => {
     const db = getDb()
-    const row = db.prepare('SELECT * FROM post_sessions WHERE id=?').get(id) as PostSession & { messages: string }
+    const row = db.prepare('SELECT * FROM post_sessions WHERE id=?').get(id) as (PostSession & { messages: string; sources: string; source_url?: string; source_text?: string; paper_title?: string; paper_authors?: string; paper_journal?: string; paper_abstract?: string }) | undefined
     if (!row) return null
+    let sources: PostSource[] = JSON.parse(row.sources || '[]')
+    // Legacy reconstruction: if no sources saved, build from old fields
+    if (!sources.length && (row.source_url || row.source_text)) {
+      sources = [{
+        id: '0',
+        role: 'primary',
+        type: row.source_url ? 'url' : 'text',
+        url: row.source_url || undefined,
+        text: row.source_text || undefined,
+        preview: row.paper_title ? {
+          title: row.paper_title || '',
+          authors: row.paper_authors || '',
+          journal: row.paper_journal || '',
+          abstract: row.paper_abstract || '',
+        } : undefined,
+      }]
+    }
     return {
       ...row,
-      messages: JSON.parse((row as unknown as { messages: string }).messages || '[]'),
+      sources,
+      messages: JSON.parse(row.messages || '[]'),
     }
   })
 
   ipcMain.handle(IPC.POST_SAVE_SESSION, (_evt, session: Partial<PostSession>) => {
     const db = getDb()
     const messages = JSON.stringify(session.messages || [])
+    const sources = JSON.stringify(session.sources || [])
+    // Derive legacy fields from primary source for backward compat
+    const primary = session.sources?.find(s => s.role === 'primary')
+    const sourceUrl = primary?.url || session.sourceUrl || null
+    const sourceText = primary?.text || session.sourceText || null
+    const paperTitle = primary?.preview?.title || session.paperTitle || null
+    const paperAuthors = primary?.preview?.authors || session.paperAuthors || null
+    const paperJournal = primary?.preview?.journal || session.paperJournal || null
+    const paperAbstract = primary?.preview?.abstract || session.paperAbstract || null
+
+    const title = session.title || null
+
     if (session.id) {
       db.prepare(`
         UPDATE post_sessions SET
-          source_url=?, source_text=?, paper_title=?, paper_authors=?, paper_journal=?,
-          paper_abstract=?, current_post=?, messages=?, word_count=?, updated_at=datetime('now')
+          title=?, source_url=?, source_text=?, paper_title=?, paper_authors=?, paper_journal=?,
+          paper_abstract=?, current_post=?, messages=?, sources=?, word_count=?, updated_at=datetime('now')
         WHERE id=?
       `).run(
-        session.sourceUrl || null,
-        session.sourceText || null,
-        session.paperTitle || null,
-        session.paperAuthors || null,
-        session.paperJournal || null,
-        session.paperAbstract || null,
-        session.currentPost || '',
-        messages,
-        session.wordCount || 0,
-        session.id
+        title, sourceUrl, sourceText, paperTitle, paperAuthors, paperJournal,
+        paperAbstract, session.currentPost || '', messages, sources,
+        session.wordCount || 0, session.id
       )
-      prunePostSessions(db, 20)
+      prunePostSessions(db, 50)
       return session.id
     } else {
       const result = db.prepare(`
-        INSERT INTO post_sessions (source_url, source_text, paper_title, paper_authors, paper_journal, paper_abstract, current_post, messages, word_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO post_sessions (title, source_url, source_text, paper_title, paper_authors, paper_journal, paper_abstract, current_post, messages, sources, word_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        session.sourceUrl || null,
-        session.sourceText || null,
-        session.paperTitle || null,
-        session.paperAuthors || null,
-        session.paperJournal || null,
-        session.paperAbstract || null,
-        session.currentPost || '',
-        messages,
+        title, sourceUrl, sourceText, paperTitle, paperAuthors, paperJournal,
+        paperAbstract, session.currentPost || '', messages, sources,
         session.wordCount || 0
       )
-      prunePostSessions(db, 20)
+      prunePostSessions(db, 50)
       return result.lastInsertRowid
     }
   })
@@ -83,8 +101,8 @@ export function registerPostHandlers(): void {
           'User-Agent': 'Mozilla/5.0 (compatible; academic-reader/1.0)',
           Accept: 'text/html,application/xhtml+xml',
         },
-        timeout: 15000,
-      } as RequestInit)
+        signal: AbortSignal.timeout(15000),
+      })
       const html = await response.text()
       const $ = cheerio.load(html)
 

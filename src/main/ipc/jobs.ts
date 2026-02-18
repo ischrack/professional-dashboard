@@ -68,6 +68,34 @@ export function registerJobHandlers(): void {
     return true
   })
 
+  // ── URL Preview ─────────────────────────────────────────────────────────────
+
+  ipcMain.handle(IPC.JOB_PREVIEW_URL, async (_evt, url: string) => {
+    try {
+      const response = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; job-preview/1.0)', Accept: 'text/html' },
+        signal: AbortSignal.timeout(10000),
+      })
+      const html = await response.text()
+      const $ = cheerio.load(html)
+      const ogTitle = $('meta[property="og:title"]').attr('content') || $('title').text().trim() || ''
+      let jobTitle = ''
+      let company = ''
+      const liMatch = ogTitle.match(/^(.+?)\s+[-–]\s+(.+?)\s*\|/)
+      if (liMatch) {
+        jobTitle = liMatch[1].trim()
+        company = liMatch[2].trim()
+      } else {
+        jobTitle = ogTitle || $('h1').first().text().trim()
+        company = $('meta[property="og:site_name"]').attr('content') ||
+                  $('[class*="company"], [class*="employer"]').first().text().trim() || ''
+      }
+      return { jobTitle: jobTitle || undefined, company: company || undefined }
+    } catch (err) {
+      return { error: String(err) }
+    }
+  })
+
   // ── IMAP ────────────────────────────────────────────────────────────────────
 
   ipcMain.handle(IPC.JOB_IMAP_TEST, async () => {

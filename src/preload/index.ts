@@ -62,6 +62,7 @@ const api = {
   jobExportDocx: (jobId: number, type: string, html: string, lastName: string) => ipcRenderer.invoke(IPC.JOB_EXPORT_DOCX, jobId, type, html, lastName),
   jobOpenFile: (filePath: string) => ipcRenderer.invoke(IPC.JOB_OPEN_FILE, filePath),
   jobFetchCompanyPage: (company: string, url?: string) => ipcRenderer.invoke(IPC.JOB_FETCH_COMPANY_PAGE, company, url),
+  jobPreviewUrl: (url: string) => ipcRenderer.invoke(IPC.JOB_PREVIEW_URL, url),
 
   // Tracker
   trackerGetAll: () => ipcRenderer.invoke(IPC.TRACKER_GET_ALL),
@@ -78,6 +79,55 @@ const api = {
   showLinkedInBrowser: (bounds?: Record<string, number>) => ipcRenderer.invoke(IPC.SHOW_LINKEDIN_BROWSER, bounds),
   hideLinkedInBrowser: () => ipcRenderer.invoke(IPC.HIDE_LINKEDIN_BROWSER),
   linkedinLogout: () => ipcRenderer.invoke(IPC.LINKEDIN_LOGOUT),
+
+  // Interview Prep — CRUD
+  interviewGetBrief: (jobId: number) => ipcRenderer.invoke(IPC.INTERVIEW_GET_BRIEF, jobId),
+  interviewSaveBrief: (data: Record<string, unknown>) => ipcRenderer.invoke(IPC.INTERVIEW_SAVE_BRIEF, data),
+  interviewGetSessions: (jobId: number) => ipcRenderer.invoke(IPC.INTERVIEW_GET_SESSIONS, jobId),
+  interviewGetSession: (sessionId: number) => ipcRenderer.invoke(IPC.INTERVIEW_GET_SESSION, sessionId),
+  interviewCreateSession: (data: Record<string, unknown>) => ipcRenderer.invoke(IPC.INTERVIEW_CREATE_SESSION, data),
+  interviewUpdateSession: (sessionId: number, updates: Record<string, unknown>) => ipcRenderer.invoke(IPC.INTERVIEW_UPDATE_SESSION, sessionId, updates),
+  interviewSaveExchange: (data: Record<string, unknown>) => ipcRenderer.invoke(IPC.INTERVIEW_SAVE_EXCHANGE, data),
+  interviewGetExchanges: (sessionId: number) => ipcRenderer.invoke(IPC.INTERVIEW_GET_EXCHANGES, sessionId),
+  interviewDeleteSession: (sessionId: number) => ipcRenderer.invoke(IPC.INTERVIEW_DELETE_SESSION, sessionId),
+  interviewAppendNotes: (jobId: number, text: string) => ipcRenderer.invoke(IPC.INTERVIEW_APPEND_NOTES, jobId, text),
+  interviewHasActive: (jobId: number) => ipcRenderer.invoke(IPC.INTERVIEW_HAS_ACTIVE, jobId),
+
+  // Interview Prep — Streaming (fire-and-forget send; results come back via events)
+  interviewStartResearch: (data: Record<string, unknown>) => ipcRenderer.send('interview:start-research', data),
+  interviewSendChat: (data: Record<string, unknown>) => ipcRenderer.send('interview:send-chat', data),
+
+  // Interview Prep — Stream listeners (return cleanup functions)
+  onInterviewToken: (cb: (token: string) => void): (() => void) => {
+    const handler = (_evt: unknown, token: string) => cb(token)
+    ipcRenderer.on('interview:token', handler)
+    return () => ipcRenderer.removeListener('interview:token', handler)
+  },
+  onInterviewSearchEvent: (cb: (evt: Record<string, unknown>) => void): (() => void) => {
+    const handler = (_evt: unknown, data: Record<string, unknown>) => cb(data)
+    ipcRenderer.on('interview:search-event', handler)
+    return () => ipcRenderer.removeListener('interview:search-event', handler)
+  },
+  onInterviewResearchDone: (cb: (result: Record<string, unknown>) => void): (() => void) => {
+    const handler = (_evt: unknown, data: Record<string, unknown>) => cb(data)
+    ipcRenderer.on('interview:research-done', handler)
+    return () => ipcRenderer.removeListener('interview:research-done', handler)
+  },
+  onInterviewChatToken: (cb: (token: string) => void): (() => void) => {
+    const handler = (_evt: unknown, token: string) => cb(token)
+    ipcRenderer.on('interview:chat-token', handler)
+    return () => ipcRenderer.removeListener('interview:chat-token', handler)
+  },
+  onInterviewChatDone: (cb: (result: Record<string, unknown>) => void): (() => void) => {
+    const handler = (_evt: unknown, data: Record<string, unknown>) => cb(data)
+    ipcRenderer.on('interview:chat-done', handler)
+    return () => ipcRenderer.removeListener('interview:chat-done', handler)
+  },
+  onInterviewStreamError: (cb: (err: string) => void): (() => void) => {
+    const handler = (_evt: unknown, err: string) => cb(err)
+    ipcRenderer.on('interview:stream-error', handler)
+    return () => ipcRenderer.removeListener('interview:stream-error', handler)
+  },
 }
 
 if (process.contextIsolated) {

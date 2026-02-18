@@ -10,7 +10,9 @@
       "Bash(jobs:*)",
       "Bash(npx tsc:*)",
       "Bash(xargs sed:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(__NEW_LINE_28f88549563b87d1__ python3:*)",
+      "Bash(iconutil:*)"
     ]
   }
 }

@@ -14,6 +14,18 @@ export default function QuickAddModal({ onClose, onAdd }: Props) {
   const [appliedAt, setAppliedAt] = useState(new Date().toISOString().split('T')[0])
   const [fetchNow, setFetchNow] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [urlPreviewing, setUrlPreviewing] = useState(false)
+
+  async function handleUrlBlur() {
+    if (!url.trim() || company || title) return
+    setUrlPreviewing(true)
+    try {
+      const r = await window.api.jobPreviewUrl(url) as { jobTitle?: string; company?: string }
+      if (r.jobTitle && !title) setTitle(r.jobTitle)
+      if (r.company && !company) setCompany(r.company)
+    } catch { /* ignore */ }
+    finally { setUrlPreviewing(false) }
+  }
 
   async function handleSubmit() {
     if (!company || !title) return
@@ -47,8 +59,11 @@ export default function QuickAddModal({ onClose, onAdd }: Props) {
             <input value={title} onChange={e => setTitle(e.target.value)} className="input" placeholder="Senior Scientist, Immunology" />
           </div>
           <div>
-            <label className="block text-xs font-medium text-text-muted mb-1">Job Posting URL</label>
-            <input value={url} onChange={e => setUrl(e.target.value)} className="input" placeholder="https://linkedin.com/jobs/view/..." type="url" />
+            <label className="block text-xs font-medium text-text-muted mb-1 flex items-center gap-1">
+              Job Posting URL
+              {urlPreviewing && <Loader2 size={11} className="animate-spin text-text-dim" />}
+            </label>
+            <input value={url} onChange={e => setUrl(e.target.value)} onBlur={handleUrlBlur} className="input" placeholder="https://linkedin.com/jobs/view/..." type="url" />
           </div>
           <div>
             <label className="block text-xs font-medium text-text-muted mb-1">Application Date</label>

@@ -66,7 +66,7 @@ function SecretField({ label, name, placeholder }: { label: string; name: string
 
 export default function SettingsPanel({ onClose }: { onClose: () => void }) {
   const { toast } = useToast()
-  const [tab, setTab] = useState<'api' | 'email' | 'resume' | 'models' | 'storage'>('api')
+  const [tab, setTab] = useState<'api' | 'email' | 'resume' | 'models' | 'storage' | 'interview'>('api')
   const [settings, setSettings] = useState<Record<string, unknown>>({})
   const [resumeBases, setResumeBases] = useState<ResumeBase[]>([])
   const [editingBase, setEditingBase] = useState<Partial<ResumeBase> | null>(null)
@@ -112,7 +112,7 @@ export default function SettingsPanel({ onClose }: { onClose: () => void }) {
   }
 
   const models = (settings.models as Record<string, string>) || {}
-  const TABS = [{ id: 'api', label: 'API Keys' }, { id: 'email', label: 'Email / IMAP' }, { id: 'models', label: 'Models' }, { id: 'resume', label: 'Resume Bases' }, { id: 'storage', label: 'Storage' }]
+  const TABS = [{ id: 'api', label: 'API Keys' }, { id: 'email', label: 'Email / IMAP' }, { id: 'models', label: 'Models' }, { id: 'resume', label: 'Resume Bases' }, { id: 'storage', label: 'Storage' }, { id: 'interview', label: 'Interview Prep' }]
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -210,6 +210,31 @@ export default function SettingsPanel({ onClose }: { onClose: () => void }) {
                 <ModelField label="Resume Generator" value={models.resumeGenerator || ''} onChange={v => updateModelSetting('resumeGenerator', v)} />
                 <ModelField label="Cover Letter Generator" value={models.coverLetterGenerator || ''} onChange={v => updateModelSetting('coverLetterGenerator', v)} />
                 <ModelField label="Q&A Generator" value={models.qaGenerator || ''} onChange={v => updateModelSetting('qaGenerator', v)} />
+              </div>
+            )}
+            {tab === 'interview' && (
+              <div className="space-y-4">
+                <h3 className="text-xs font-semibold text-text-dim uppercase tracking-wider">Interview Prep</h3>
+                <p className="text-xs text-text-dim">Settings for the Interview Prep module — research and mock interviews.</p>
+                <ModelField
+                  label="Research Model"
+                  value={models.interviewResearch || ''}
+                  onChange={v => updateModelSetting('interviewResearch', v)}
+                />
+                <p className="text-xs text-text-dim -mt-2">Use the most capable available model for best research quality. Defaults to claude-opus-4-6.</p>
+                <div>
+                  <label className="block text-xs font-medium text-text-muted mb-1">Default Research Depth</label>
+                  <select
+                    value={(settings.interviewResearchDepth as string) || 'always_ask'}
+                    onChange={e => updateSetting('interviewResearchDepth', e.target.value)}
+                    className="input"
+                  >
+                    <option value="always_ask">Always ask</option>
+                    <option value="quick">Quick Brief (pre-select)</option>
+                    <option value="deep">Deep Research (pre-select)</option>
+                  </select>
+                  <p className="text-xs text-text-dim mt-1">When set to Quick or Deep, that option is pre-selected — you still click "Start Research" to begin.</p>
+                </div>
               </div>
             )}
             {tab === 'resume' && (
