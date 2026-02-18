@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm init:*)",
+      "Bash(npm install:*)",
+      "Bash(python3:*)",
+      "Bash(npm run build:*)",
+      "Bash(pkill:*)",
+      "Bash(./node_modules/.bin/electron-rebuild:*)",
+      "Bash(jobs:*)",
+      "Bash(npx tsc:*)",
+      "Bash(xargs sed:*)",
+      "Bash(find:*)"
+    ]
+  }
+}

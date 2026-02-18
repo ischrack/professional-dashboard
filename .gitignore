@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+dist/
+
+# Electron dev artifacts
+*.db.lock
+.vite/
+
+# macOS
+.DS_Store
+*.dmg
+
+# Environment / secrets
+.env
+.env.*
+settings.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# TypeScript
+*.tsbuildinfo
+
+# Test output
+coverage/
