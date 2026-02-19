@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import {
   FileText, Mail, MessageSquare, HelpCircle, StickyNote,
-  CheckCircle, Globe, Mic2, RefreshCw, Loader2
+  CheckCircle, Globe, Mic2, RefreshCw, Loader2, Trash2, AlertTriangle
 } from 'lucide-react'
 import clsx from 'clsx'
 import type { Job } from '@shared/types'
@@ -18,14 +18,16 @@ type Tab = 'resume' | 'cover_letter' | 'recruiter_message' | 'qa' | 'notes' | 'i
 interface Props {
   job: Job
   onJobUpdated: () => Promise<void>
+  onJobDeleted: () => Promise<void>
   initialTab?: Tab
 }
 
-export default function ApplicationWorkspace({ job, onJobUpdated, initialTab }: Props) {
+export default function ApplicationWorkspace({ job, onJobUpdated, onJobDeleted, initialTab }: Props) {
   const { toast } = useToast()
   const [activeTab, setActiveTab] = useState<Tab>(initialTab ?? 'resume')
   const [markAppliedOpen, setMarkAppliedOpen] = useState(false)
   const [enriching, setEnriching] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState(false)
 
   const cfg = STATUS_CONFIG[job.status]
 
@@ -36,10 +38,26 @@ export default function ApplicationWorkspace({ job, onJobUpdated, initialTab }: 
       const raw = await window.api.jobEnrich([job.id]) as Record<string, unknown>
       if (raw && 'error' in raw) { toast('error', raw.error as string); return }
       const results = raw as Record<number, { success: boolean; error?: string }>
-      if (results[job.id]?.success) { toast('success', 'Job enriched'); await onJobUpdated() }
-      else toast('error', results[job.id]?.error || 'Enrichment failed')
+      const r = results[job.id]
+      if (r?.success) {
+        toast('success', 'Job enriched')
+        await onJobUpdated()
+      } else {
+        const errMsg = r?.error || 'Enrichment failed'
+        toast('error', errMsg)
+        if (errMsg.includes('authentication required')) {
+          window.api.showLinkedInBrowser()
+        }
+        await onJobUpdated()
+      }
     } catch (err) { toast('error', String(err)) }
     finally { setEnriching(false) }
+  }
+
+  async function handleDelete() {
+    await window.api.jobDelete(job.id)
+    toast('success', 'Job deleted')
+    await onJobDeleted()
   }
 
   // Status update
@@ -73,15 +91,57 @@ export default function ApplicationWorkspace({ job, onJobUpdated, initialTab }: 
             {job.remote && <span className="badge badge-gray text-[10px]">{job.remote}</span>}
             {job.salary && <span className="text-xs text-text-muted">{job.salary}</span>}
             {job.url && (
-              <button onClick={() => window.api.openExternal(job.url!)} className="text-xs text-accent hover:underline flex items-center gap-1">
+              <button
+                onClick={() => job.url?.includes('linkedin.com')
+                  ? window.api.linkedinOpenUrl(job.url!)
+                  : window.api.openExternal(job.url!)
+                }
+                className="text-xs text-accent hover:underline flex items-center gap-1"
+              >
                 <Globe size={11} />View posting
               </button>
             )}
           </div>
         </div>
 
-        {/* Status dropdown */}
+        {/* Status dropdown + Enrich + Delete */}
         <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            onClick={handleEnrich}
+            disabled={enriching || !job.url}
+            className="btn-ghost text-xs flex items-center gap-1.5"
+            title={job.url ? 'Fetch job details from LinkedIn' : 'No URL set'}
+          >
+            {enriching ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+            {enriching ? 'Enriching…' : 'Enrich'}
+          </button>
+          {deleteConfirm ? (
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-warning flex items-center gap-1">
+                <AlertTriangle size={11} />Delete?
+              </span>
+              <button
+                onClick={handleDelete}
+                className="btn-ghost text-xs text-error hover:text-error px-2 py-1"
+              >
+                Yes
+              </button>
+              <button
+                onClick={() => setDeleteConfirm(false)}
+                className="btn-ghost text-xs px-2 py-1"
+              >
+                No
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setDeleteConfirm(true)}
+              className="btn-ghost p-1.5 text-text-dim hover:text-error"
+              title="Delete job"
+            >
+              <Trash2 size={13} />
+            </button>
+          )}
           <select
             value={job.status}
             onChange={e => handleStatusChange(e.target.value)}
@@ -110,24 +170,35 @@ export default function ApplicationWorkspace({ job, onJobUpdated, initialTab }: 
       <div className="flex flex-1 overflow-hidden">
         {/* Job description */}
         <div className="w-80 border-r border-border flex flex-col flex-shrink-0 overflow-hidden">
-          <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+          <div className="px-3 py-2 border-b border-border">
             <span className="text-xs font-semibold text-text-dim uppercase tracking-wider">Job Description</span>
-            <button
-              onClick={handleEnrich}
-              disabled={enriching || !job.url}
-              className="btn-ghost p-1 text-text-dim hover:text-text"
-              title={job.url ? 'Enrich job' : 'No URL set'}
-            >
-              {enriching ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-            </button>
           </div>
           <div className="flex-1 overflow-y-auto p-3">
             {job.description ? (
-              <p className="text-xs text-text-muted leading-relaxed whitespace-pre-wrap">{job.description}</p>
+              <div className="space-y-2">
+                {job.description.split('\n').filter(l => l.trim()).map((line, i) => (
+                  <p key={i} className="text-xs text-text-muted leading-relaxed">{line.trim()}</p>
+                ))}
+              </div>
             ) : (
-              <div className="flex flex-col items-center justify-center h-24 text-text-dim">
-                <p className="text-xs text-center">No description yet</p>
-                <p className="text-[10px] mt-1 opacity-60">Enrich to fetch full details</p>
+              <div className="flex flex-col items-center justify-center h-24 text-text-dim gap-1">
+                {job.status === 'enrichment_failed' ? (
+                  <>
+                    <p className="text-xs text-center text-warning">Enrichment failed</p>
+                    <p className="text-[10px] text-center opacity-70">LinkedIn login may be required.</p>
+                    <button
+                      onClick={() => window.api.showLinkedInBrowser()}
+                      className="text-[10px] text-accent hover:underline mt-1"
+                    >
+                      Open LinkedIn browser →
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-xs text-center">No description yet</p>
+                    <p className="text-[10px] opacity-60">Click Enrich to fetch details</p>
+                  </>
+                )}
               </div>
             )}
           </div>

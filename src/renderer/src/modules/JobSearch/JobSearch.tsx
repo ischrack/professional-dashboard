@@ -86,6 +86,8 @@ export default function JobSearch() {
         succeeded === 0 ? 'error' : failed > 0 ? 'info' : 'success',
         `Enriched ${succeeded}/${ids.length} jobs${failed > 0 ? ` (${failed} failed)` : ''}`
       )
+      const authFailed = Object.values(results).some(r => r.error?.includes('authentication required'))
+      if (authFailed) window.api.showLinkedInBrowser()
       setCheckedIds(new Set())
       await loadJobs()
     } catch (err) {
@@ -122,6 +124,18 @@ export default function JobSearch() {
       const updated = await window.api.jobGetById(selectedJob.id) as Job
       setSelectedJob(updated)
     }
+  }
+
+  async function handleJobDeleted(jobId: number) {
+    await loadJobs()
+    if (selectedJob?.id === jobId) setSelectedJob(null)
+    window.dispatchEvent(new CustomEvent('jobs-changed'))
+  }
+
+  async function handleDeleteFromCard(jobId: number) {
+    await window.api.jobDelete(jobId)
+    toast('success', 'Job deleted')
+    await handleJobDeleted(jobId)
   }
 
   const filtered = jobs
@@ -233,6 +247,7 @@ export default function JobSearch() {
               checked={checkedIds.has(job.id)}
               onSelect={() => setSelectedJob(job)}
               onToggleCheck={() => toggleCheck(job.id)}
+              onDelete={() => handleDeleteFromCard(job.id)}
             />
           ))}
         </div>
@@ -244,6 +259,7 @@ export default function JobSearch() {
           <ApplicationWorkspace
             job={selectedJob}
             onJobUpdated={handleJobUpdated}
+            onJobDeleted={() => handleJobDeleted(selectedJob.id)}
             initialTab={initialTab}
           />
         ) : (

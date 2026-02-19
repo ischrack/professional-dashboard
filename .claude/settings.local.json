@@ -12,7 +12,9 @@
       "Bash(xargs sed:*)",
       "Bash(find:*)",
       "Bash(__NEW_LINE_28f88549563b87d1__ python3:*)",
-      "Bash(iconutil:*)"
+      "Bash(iconutil:*)",
+      "Bash(npx electron-vite build:*)",
+      "Bash(node -e:*)"
     ]
   }
 }

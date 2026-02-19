@@ -76,8 +76,9 @@ const api = {
   openPath: (filePath: string) => ipcRenderer.invoke(IPC.OPEN_PATH, filePath),
 
   // LinkedIn
-  showLinkedInBrowser: (bounds?: Record<string, number>) => ipcRenderer.invoke(IPC.SHOW_LINKEDIN_BROWSER, bounds),
+  showLinkedInBrowser: () => ipcRenderer.invoke(IPC.SHOW_LINKEDIN_BROWSER),
   hideLinkedInBrowser: () => ipcRenderer.invoke(IPC.HIDE_LINKEDIN_BROWSER),
+  linkedinOpenUrl: (url: string) => ipcRenderer.invoke(IPC.LINKEDIN_OPEN_URL, url),
   linkedinLogout: () => ipcRenderer.invoke(IPC.LINKEDIN_LOGOUT),
 
   // Interview Prep — CRUD

@@ -337,6 +337,7 @@ export const IPC = {
   JOB_FETCH_COMPANY_PAGE: 'job:fetchCompanyPage',
   JOB_OPEN_FILE: 'job:openFile',
   JOB_PREVIEW_URL: 'job:previewUrl',
+  LINKEDIN_OPEN_URL: 'linkedin:openUrl',
 
   // Application Tracker
   TRACKER_GET_ALL: 'tracker:getAll',

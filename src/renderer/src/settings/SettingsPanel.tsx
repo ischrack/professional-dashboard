@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { X, Eye, EyeOff, Plus, Trash2, Folder, CheckCircle, AlertCircle, Loader2 } from 'lucide-react'
+import { X, Eye, EyeOff, Plus, Trash2, Folder, CheckCircle, AlertCircle, Loader2, Globe, LogOut } from 'lucide-react'
 import { useToast } from '../shared/hooks/useToast'
 import type { ResumeBase } from '@shared/types'
 import clsx from 'clsx'
@@ -66,7 +66,7 @@ function SecretField({ label, name, placeholder }: { label: string; name: string
 
 export default function SettingsPanel({ onClose }: { onClose: () => void }) {
   const { toast } = useToast()
-  const [tab, setTab] = useState<'api' | 'email' | 'resume' | 'models' | 'storage' | 'interview'>('api')
+  const [tab, setTab] = useState<'api' | 'linkedin' | 'email' | 'resume' | 'models' | 'storage' | 'interview'>('api')
   const [settings, setSettings] = useState<Record<string, unknown>>({})
   const [resumeBases, setResumeBases] = useState<ResumeBase[]>([])
   const [editingBase, setEditingBase] = useState<Partial<ResumeBase> | null>(null)
@@ -112,7 +112,7 @@ export default function SettingsPanel({ onClose }: { onClose: () => void }) {
   }
 
   const models = (settings.models as Record<string, string>) || {}
-  const TABS = [{ id: 'api', label: 'API Keys' }, { id: 'email', label: 'Email / IMAP' }, { id: 'models', label: 'Models' }, { id: 'resume', label: 'Resume Bases' }, { id: 'storage', label: 'Storage' }, { id: 'interview', label: 'Interview Prep' }]
+  const TABS = [{ id: 'api', label: 'API Keys' }, { id: 'linkedin', label: 'LinkedIn' }, { id: 'email', label: 'Email / IMAP' }, { id: 'models', label: 'Models' }, { id: 'resume', label: 'Resume Bases' }, { id: 'storage', label: 'Storage' }, { id: 'interview', label: 'Interview Prep' }]
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -138,6 +138,35 @@ export default function SettingsPanel({ onClose }: { onClose: () => void }) {
                 <SecretField label="Anthropic Claude API Key" name="anthropicKey" placeholder="sk-ant-..." />
                 <SecretField label="OpenAI API Key" name="openaiKey" placeholder="sk-..." />
                 <SecretField label="PubMed / NCBI E-utilities API Key" name="pubmedKey" placeholder="Optional — increases rate limits" />
+              </div>
+            )}
+            {tab === 'linkedin' && (
+              <div className="space-y-4">
+                <h3 className="text-xs font-semibold text-text-dim uppercase tracking-wider">LinkedIn Authentication</h3>
+                <p className="text-xs text-text-dim">
+                  Sign in to LinkedIn in the embedded browser to enable job enrichment. Your session persists between app launches.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => { window.api.showLinkedInBrowser(); onClose() }}
+                    className="btn-primary text-xs"
+                  >
+                    <Globe size={13} />Open LinkedIn Browser
+                  </button>
+                  <button
+                    onClick={() => window.api.linkedinLogout()}
+                    className="btn-ghost text-xs text-error hover:text-error flex items-center gap-1.5"
+                  >
+                    <LogOut size={12} />Log Out
+                  </button>
+                </div>
+                <div className="card p-4 space-y-2">
+                  <p className="text-xs font-semibold text-text-muted mb-1">Setup steps</p>
+                  <p className="text-xs text-text-dim">1. Click "Open LinkedIn Browser" above</p>
+                  <p className="text-xs text-text-dim">2. Sign in to your LinkedIn account in the panel that opens</p>
+                  <p className="text-xs text-text-dim">3. Click "Done" to close the panel — your session is saved</p>
+                  <p className="text-xs text-text-dim">4. Select jobs in the list and click "Enrich" to fetch details</p>
+                </div>
               </div>
             )}
             {tab === 'email' && (

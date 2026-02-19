@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { ipcMain, session, app } from 'electron'
 import { getDb } from '../db'
 import { IPC } from '../../shared/types'
 import type { Job, ApplicationMaterial, QAEntry } from '../../shared/types'
@@ -9,11 +9,35 @@ import * as cheerio from 'cheerio'
 import { getEncryptedKey } from './settings'
 import path from 'path'
 import fs from 'fs'
-import { app } from 'electron'
 import {
   Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType,
   BorderStyle, convertInchesToTwip
 } from 'docx'
+
+// ── LLM description cleanup ──────────────────────────────────────────────────
+// Strips nav/footer/UI junk from raw extracted text. Only runs if Anthropic key is set.
+
+async function cleanDescriptionWithLlm(raw: string): Promise<string> {
+  if (raw.length <= 200) return raw
+  const apiKey = getEncryptedKey('anthropicKey')
+  if (!apiKey) return raw
+  try {
+    const Anthropic = (await import('@anthropic-ai/sdk')).default
+    const client = new Anthropic({ apiKey })
+    const response = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 4000,
+      messages: [{
+        role: 'user',
+        content: `The following is extracted text from a LinkedIn job posting. Extract and return only the job description content — responsibilities, qualifications, and requirements. Remove any navigation text, footer text, promotional content, or UI elements. Return clean plain text with logical line breaks.\n\n${raw.slice(0, 8000)}`
+      }]
+    })
+    const cleaned = response.content[0].type === 'text' ? response.content[0].text.trim() : ''
+    return cleaned || raw
+  } catch {
+    return raw
+  }
+}
 
 export function registerJobHandlers(): void {
   // ── CRUD ────────────────────────────────────────────────────────────────────
@@ -149,84 +173,319 @@ export function registerJobHandlers(): void {
         continue
       }
 
+      let enriched = false
+      let authFailed = false
+
+      // ── Primary: server-side fetch with LinkedIn session cookies ─────────────
+      // LinkedIn SSR renders the full job description in initial HTML —
+      // no IntersectionObserver / hidden-viewport issues.
       try {
-        await view.webContents.loadURL(job.url)
-        // Wait for render
-        await new Promise((r) => setTimeout(r, 3000))
+        const sess = session.fromPartition('persist:linkedin')
+        const cookies = await sess.cookies.get({ domain: '.linkedin.com' })
+        // li_at is LinkedIn's main session cookie — present only when logged in
+        const liAt = cookies.find((c) => c.name === 'li_at')
+        if (liAt) {
+          const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join('; ')
+          const fetchResp = await fetch(job.url, {
+            headers: {
+              'Cookie': cookieHeader,
+              'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'en-US,en;q=0.9',
+              'Referer': 'https://www.linkedin.com/',
+            },
+            signal: AbortSignal.timeout(15000),
+            redirect: 'follow',
+          })
 
-        // Primary extraction
-        let data: Record<string, unknown> | null = null
-        try {
-          data = await view.webContents.executeJavaScript(`
-            (function() {
-              function t(sel) {
-                const el = document.querySelector(sel);
-                return el ? el.innerText.trim() : null;
-              }
-              return {
-                description: t('.jobs-description__content, .job-view-layout, [data-test="job-description"]'),
-                salary: t('.compensation__salary-range, .salary'),
-                seniority: t('.description__job-criteria-text:nth-child(1), [class*="seniority"]'),
-                jobType: t('.description__job-criteria-text:nth-child(3), [class*="employment-type"]'),
-                numApplicants: t('.num-applicants__caption, [class*="applicant"]'),
-                easyApply: !!document.querySelector('.jobs-apply-button--top-card, [data-test="apply-button"]'),
-              };
-            })()
-          `)
-        } catch {
-          data = null
-        }
+          // Detect auth redirect
+          const fetchFinalUrl = fetchResp.url
+          if (/\/(login|authwall|checkpoint\/challenge)/.test(fetchFinalUrl)) {
+            authFailed = true
+            db.prepare(`UPDATE jobs SET status='enrichment_failed', updated_at=datetime('now') WHERE id=?`).run(jobId)
+            results[jobId] = { success: false, error: 'LinkedIn authentication required — open Settings → LinkedIn to log in' }
+          } else {
+            const html = await fetchResp.text()
+            const $ = cheerio.load(html)
 
-        // If primary extraction failed, use LLM fallback
-        if (!data?.description) {
-          const html = await view.webContents.executeJavaScript(`document.body.innerText.slice(0, 8000)`)
-          const apiKey = getEncryptedKey('anthropicKey') || getEncryptedKey('openaiKey')
-          if (apiKey) {
-            try {
-              const Anthropic = (await import('@anthropic-ai/sdk')).default
-              const client = new Anthropic({ apiKey: getEncryptedKey('anthropicKey') || apiKey })
-              const response = await client.messages.create({
-                model: 'claude-haiku-4-5-20251001',
-                max_tokens: 2000,
-                messages: [{
-                  role: 'user',
-                  content: `Extract job details from this LinkedIn job page text. Return JSON with: description, salary, seniority, jobType, numApplicants (as number or null), easyApply (boolean).\n\n${html}`
-                }]
+            // Title-based auth wall check
+            const pageTitle = $('title').text()
+            if (/log\s*in|sign\s*in/i.test(pageTitle) && !/job|engineer|developer|analyst|manager|director|coordinator/i.test(pageTitle)) {
+              authFailed = true
+              db.prepare(`UPDATE jobs SET status='enrichment_failed', updated_at=datetime('now') WHERE id=?`).run(jobId)
+              results[jobId] = { success: false, error: 'LinkedIn authentication required — open Settings → LinkedIn to log in' }
+            } else {
+              let description: string | null = null
+              let salary: string | null = null
+              let seniority: string | null = null
+              let jobType: string | null = null
+              let numApplicants: number | null = null
+              let easyApply = false
+
+              // Strategy 1: JSON-LD schema.org JobPosting (most reliable in SSR)
+              $('script[type="application/ld+json"]').each((_i, el) => {
+                if (description) return
+                try {
+                  const jsonData = JSON.parse($(el).html() || '{}')
+                  const arr = Array.isArray(jsonData) ? jsonData : [jsonData]
+                  for (const d of arr) {
+                    if (d['@type'] === 'JobPosting' && d.description) {
+                      // description may be HTML — strip tags with cheerio
+                      description = cheerio.load(d.description).text().trim() || String(d.description)
+                      if (d.baseSalary?.value) {
+                        const bsv = d.baseSalary.value
+                        salary = [bsv.minValue, bsv.maxValue].filter(Boolean).join('–') +
+                                 (d.baseSalary.currency ? ` ${d.baseSalary.currency}` : '')
+                      }
+                      if (d.employmentType) {
+                        jobType = Array.isArray(d.employmentType) ? d.employmentType.join(', ') : String(d.employmentType)
+                      }
+                      break
+                    }
+                  }
+                } catch { /* ignore */ }
               })
-              const text = response.content[0].type === 'text' ? response.content[0].text : ''
-              const match = text.match(/\{[\s\S]*\}/)
-              if (match) data = JSON.parse(match[0])
-            } catch { /* ignore fallback failure */ }
+              console.log(`[enrich] job ${jobId}: JSON-LD → ${description ? description.length + ' chars' : 'not found'}`)
+
+              // Strategy 2: SSR HTML selectors (LinkedIn renders full text server-side)
+              if (!description) {
+                const descSelectors = [
+                  '.show-more-less-html__markup',
+                  '.description__text',
+                  '#job-details',
+                  '[class*="job-description"]',
+                  '.jobs-description__content',
+                  '.description__text--rich',
+                ]
+                for (const sel of descSelectors) {
+                  const el = $(sel)
+                  if (el.length) {
+                    const txt = el.text().trim()
+                    if (txt.length > 100) {
+                      description = txt
+                      console.log(`[enrich] job ${jobId}: SSR "${sel}" → ${txt.length} chars`)
+                      break
+                    }
+                  }
+                }
+              }
+
+              // Header / criteria fields
+              salary = salary || $('[class*="salary"], .compensation__salary-range').first().text().trim() || null
+              seniority = $('[class*="seniority"], .description__job-criteria-text').first().text().trim() || null
+              jobType = jobType || $('[class*="employment-type"], [class*="job-type"]').first().text().trim() || null
+              const applicantsText = $('[class*="num-applicant"], [class*="applicant-count"]').first().text().trim()
+              numApplicants = applicantsText ? parseInt(applicantsText.replace(/\D/g, '')) || null : null
+              easyApply = $('[class*="easy-apply"]').length > 0
+
+              if (description) {
+                console.log(`[enrich] job ${jobId}: raw description (first 300 chars): ${description.slice(0, 300)}`)
+                const cleanedDesc = await cleanDescriptionWithLlm(description)
+                console.log(`[enrich] job ${jobId}: cleaned description (first 300 chars): ${cleanedDesc.slice(0, 300)}`)
+                db.prepare(`
+                  UPDATE jobs SET description=?, salary=?, seniority_level=?, job_type=?,
+                  num_applicants=?, easy_apply=?, status='no_response', updated_at=datetime('now')
+                  WHERE id=?
+                `).run(cleanedDesc, salary || null, seniority || null, jobType || null,
+                       numApplicants, easyApply ? 1 : 0, jobId)
+                results[jobId] = { success: true }
+                enriched = true
+              }
+            }
           }
         }
-
-        if (data) {
-          db.prepare(`
-            UPDATE jobs SET description=?, salary=?, seniority_level=?, job_type=?,
-            num_applicants=?, easy_apply=?, status='no_response', updated_at=datetime('now')
-            WHERE id=?
-          `).run(
-            data.description as string || null,
-            data.salary as string || null,
-            data.seniority as string || null,
-            data.jobType as string || null,
-            data.numApplicants ? parseInt(String(data.numApplicants)) : null,
-            data.easyApply ? 1 : 0,
-            jobId
-          )
-          results[jobId] = { success: true }
-        } else {
-          db.prepare(`UPDATE jobs SET status='enrichment_failed', updated_at=datetime('now') WHERE id=?`).run(jobId)
-          results[jobId] = { success: false, error: 'Could not extract data' }
-        }
-      } catch (err) {
-        db.prepare(`UPDATE jobs SET status='enrichment_failed', updated_at=datetime('now') WHERE id=?`).run(jobId)
-        results[jobId] = { success: false, error: String(err) }
+      } catch (serverErr) {
+        console.log(`[enrich] job ${jobId}: server-side fetch error:`, serverErr)
       }
 
-      // Random delay 2-15 seconds between fetches
+      // ── Fallback: WebContentsView targeted DOM extraction ────────────────────
+      // Loads the page in a hidden browser, clicks expand, then extracts the
+      // 'About the job' section directly rather than relying on body.innerText.
+      if (!enriched && !authFailed) {
+        try {
+          await view.webContents.loadURL(job.url)
+          // Initial wait for LinkedIn's React shell to render
+          await new Promise((r) => setTimeout(r, 3500))
+
+          // Auth wall check after navigation
+          const wcFinalUrl = view.webContents.getURL()
+          if (/\/(login|authwall|checkpoint\/challenge)/.test(wcFinalUrl)) {
+            authFailed = true
+            db.prepare(`UPDATE jobs SET status='enrichment_failed', updated_at=datetime('now') WHERE id=?`).run(jobId)
+            results[jobId] = { success: false, error: 'LinkedIn authentication required — open Settings → LinkedIn to log in' }
+          } else {
+            // Single async IIFE: expand then extract with 1500ms wait between
+            type DomResult = {
+              title: string | null; company: string | null; location: string | null
+              salary: string | null; jobType: string | null; workplaceType: string | null
+              applicantCount: string | null; description: string | null; descSource: string | null
+              expandClicked: string | null
+            }
+            const domResult = await view.webContents.executeJavaScript(`
+              (async function() {
+                // ── Step 1: Find and click any expand/show-more button ─────────
+                var expandClicked = null;
+
+                // Text-content match (catches "…more", "...more", "Show more", etc.)
+                var allEls = document.querySelectorAll('button, a, [role="button"], span[tabindex]');
+                for (var i = 0; i < allEls.length && !expandClicked; i++) {
+                  var txt = (allEls[i].innerText || '').trim();
+                  var lower = txt.toLowerCase();
+                  if (lower === 'show more' || lower === 'see more' || lower === 'show more description' ||
+                      txt === '…more' || txt === '...more' || txt === '…' ||
+                      /^[…\\.]{1,3}more$/i.test(txt)) {
+                    allEls[i].click();
+                    expandClicked = 'text:' + JSON.stringify(txt);
+                  }
+                }
+
+                // aria-expanded=false with relevant label
+                if (!expandClicked) {
+                  var ariaEls = document.querySelectorAll('[aria-expanded="false"]');
+                  for (var j = 0; j < ariaEls.length && !expandClicked; j++) {
+                    var label = (ariaEls[j].getAttribute('aria-label') || '').toLowerCase();
+                    if (/show|more|expand|description/.test(label)) {
+                      ariaEls[j].click();
+                      expandClicked = 'aria-expanded:' + label;
+                    }
+                  }
+                }
+
+                // Class-based selectors
+                if (!expandClicked) {
+                  var expandSelectors = [
+                    '.show-more-less-html__button--more',
+                    '.inline-show-more-text__button',
+                    'button[class*="show-more"]',
+                    '[data-tracking-control-name*="show-more"]',
+                    '[data-tracking-control-name*="see_more"]',
+                    '.jobs-description__footer-action',
+                  ];
+                  for (var s = 0; s < expandSelectors.length && !expandClicked; s++) {
+                    var btn = document.querySelector(expandSelectors[s]);
+                    if (btn) { btn.click(); expandClicked = 'class:' + expandSelectors[s]; }
+                  }
+                }
+
+                console.log('[enrich-dom] expand click:', expandClicked || 'none found');
+
+                // Wait for expand animation
+                if (expandClicked) {
+                  await new Promise(r => setTimeout(r, 1500));
+                }
+
+                // ── Step 2: Targeted extraction of 'About the job' section ────
+                var description = null;
+                var descSource = null;
+
+                // Strategy A: Find heading with 'About the job' text, get its container
+                var allEls2 = document.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,p');
+                for (var h = 0; h < allEls2.length; h++) {
+                  var hText = (allEls2[h].childNodes.length === 1 ? allEls2[h].innerText : '').trim();
+                  if (hText === 'About the job' || hText === 'About the Job') {
+                    var container = allEls2[h].closest('[class*="description"], [class*="job-description"], [class*="details"], section, article, [id*="job"]') || allEls2[h].parentElement;
+                    if (container) {
+                      var full = container.innerText.trim();
+                      var idx = full.indexOf(hText);
+                      var raw = idx !== -1 ? full.slice(idx + hText.length).trim() : full;
+                      var cutoffs = ['Meet the team', 'People also viewed', 'Similar jobs', 'Show more jobs', 'LinkedIn members', 'About the company', 'Report job', 'Show less'];
+                      for (var c = 0; c < cutoffs.length; c++) {
+                        var ci = raw.indexOf(cutoffs[c]);
+                        if (ci > 100) { raw = raw.slice(0, ci).trim(); break; }
+                      }
+                      if (raw.length > 100) { description = raw; descSource = 'heading:exact'; break; }
+                    }
+                  }
+                }
+
+                // Strategy B: CSS selectors targeting the description markup
+                if (!description) {
+                  var descSelectors = [
+                    '.show-more-less-html__markup',
+                    '#job-details',
+                    '[class*="description"][class*="content"]',
+                    '[class*="job-description"]',
+                    '[class*="description__text"]',
+                    '.jobs-description__content',
+                    '[class*="description"]',
+                    '[class*="details"]',
+                  ];
+                  for (var ds = 0; ds < descSelectors.length && !description; ds++) {
+                    var descEl = document.querySelector(descSelectors[ds]);
+                    if (descEl) {
+                      var txt = descEl.innerText.trim();
+                      // Must be substantial and not just a header/label
+                      if (txt.length > 150 && txt.split('\\n').length > 3) {
+                        description = txt;
+                        descSource = 'selector:' + descSelectors[ds];
+                      }
+                    }
+                  }
+                }
+
+                console.log('[enrich-dom] description source:', descSource || 'none', '| length:', description ? description.length : 0);
+                if (description) {
+                  console.log('[enrich-dom] raw description preview:', description.slice(0, 300));
+                }
+
+                // ── Step 3: Structured header fields ──────────────────────────
+                function first(sels) {
+                  for (var i = 0; i < sels.length; i++) {
+                    var el = document.querySelector(sels[i]);
+                    if (el) { var t = el.innerText.trim(); if (t && t.length < 300) return t; }
+                  }
+                  return null;
+                }
+
+                var title = first(['h1', '.job-title', '[class*="job-title"]']);
+                var company = first(['[class*="company-name"]', 'a[class*="company"]', '[class*="employer"]', '.topcard__org-name-link']);
+                var location = first(['[class*="location"]', '.job-location', '.topcard__flavor--bullet']);
+                var salary = first(['[class*="salary"]', '[class*="compensation"]', '.job-details-jobs-unified-top-card__salary-info']);
+                var jobType = first(['[class*="employment-type"]', '[class*="job-type"]']);
+                var workplaceType = first(['[class*="workplace"]', '[class*="remote"]', '[class*="work-place"]']);
+                var applicantCount = first(['[class*="num-applicant"]', '[class*="applicant-count"]', '.num-applicants__caption']);
+
+                return { title, company, location, salary, jobType, workplaceType, applicantCount, description, descSource, expandClicked };
+              })()
+            `).catch(() => null) as DomResult | null
+
+            console.log(`[enrich] job ${jobId}: DOM result — source: ${domResult?.descSource ?? 'none'}, desc length: ${domResult?.description?.length ?? 0}`)
+
+            if (domResult?.description) {
+              const rawDesc = domResult.description
+              console.log(`[enrich] job ${jobId}: raw description (first 300): ${rawDesc.slice(0, 300)}`)
+              const cleanedDesc = await cleanDescriptionWithLlm(rawDesc)
+              console.log(`[enrich] job ${jobId}: cleaned description (first 300): ${cleanedDesc.slice(0, 300)}`)
+
+              db.prepare(`
+                UPDATE jobs SET description=?, salary=?, seniority_level=?, job_type=?,
+                num_applicants=?, easy_apply=?, status='no_response', updated_at=datetime('now')
+                WHERE id=?
+              `).run(
+                cleanedDesc,
+                domResult.salary || null,
+                null, // seniority not extracted in this path
+                domResult.jobType || null,
+                null, // applicantCount is a string here, skip parsing
+                0,    // easyApply not extracted in this path
+                jobId
+              )
+              results[jobId] = { success: true }
+              enriched = true
+            } else {
+              db.prepare(`UPDATE jobs SET status='enrichment_failed', updated_at=datetime('now') WHERE id=?`).run(jobId)
+              results[jobId] = { success: false, error: 'Could not find job description on page — the "About the job" section may not have loaded. Try opening the LinkedIn browser and logging in.' }
+            }
+          }
+        } catch (err) {
+          db.prepare(`UPDATE jobs SET status='enrichment_failed', updated_at=datetime('now') WHERE id=?`).run(jobId)
+          results[jobId] = { success: false, error: String(err) }
+        }
+      }
+
+      // Delay between jobs (short for server-side success, longer for WebContentsView)
       if (jobId !== jobIds[jobIds.length - 1]) {
-        const delay = Math.floor(Math.random() * 13000) + 2000
+        const delay = enriched && !authFailed ? 500 : Math.floor(Math.random() * 13000) + 2000
         await new Promise((r) => setTimeout(r, delay))
       }
     }
