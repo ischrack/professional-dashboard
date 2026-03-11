@@ -25,10 +25,15 @@ export default function JobSearch() {
   const [quickAddOpen, setQuickAddOpen] = useState(false)
   const [filter, setFilter] = useState<string>('all')
   const [searchQuery, setSearchQuery] = useState('')
+  const [workspaceCompareFocused, setWorkspaceCompareFocused] = useState(false)
 
   useEffect(() => {
     loadJobs()
   }, [])
+
+  useEffect(() => {
+    setWorkspaceCompareFocused(false)
+  }, [selectedJob?.id])
 
   // Handle sidebar Interview Prep shortcut navigation
   useEffect(() => {
@@ -129,6 +134,7 @@ export default function JobSearch() {
   async function handleJobDeleted(jobId: number) {
     await loadJobs()
     if (selectedJob?.id === jobId) setSelectedJob(null)
+    setWorkspaceCompareFocused(false)
     window.dispatchEvent(new CustomEvent('jobs-changed'))
   }
 
@@ -158,7 +164,8 @@ export default function JobSearch() {
   return (
     <div className="flex h-full overflow-hidden">
       {/* Job list panel */}
-      <div className="w-80 flex flex-col border-r border-border flex-shrink-0">
+      {!workspaceCompareFocused && (
+        <div className="w-80 flex flex-col border-r border-border flex-shrink-0">
         {/* Header */}
         <div className="p-3 border-b border-border">
           <div className="flex items-center justify-between mb-2">
@@ -251,7 +258,8 @@ export default function JobSearch() {
             />
           ))}
         </div>
-      </div>
+        </div>
+      )}
 
       {/* Workspace */}
       <div className="flex-1 overflow-hidden">
@@ -261,6 +269,7 @@ export default function JobSearch() {
             onJobUpdated={handleJobUpdated}
             onJobDeleted={() => handleJobDeleted(selectedJob.id)}
             initialTab={initialTab}
+            onCompareFocusChange={setWorkspaceCompareFocused}
           />
         ) : (
           <div className="flex flex-col items-center justify-center h-full text-text-dim">

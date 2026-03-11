@@ -1,9 +1,10 @@
 import { app, BrowserWindow, WebContentsView, shell, ipcMain, dialog, safeStorage, nativeTheme, nativeImage } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { IPC, type ResumeCompareWindowPayload } from '../shared/types'
 import { openDatabase, closeDatabase } from './db'
 import { runMigrations } from './db/schema'
-import { registerSettingsHandlers } from './ipc/settings'
+import { registerSettingsHandlers, migrateSettings } from './ipc/settings'
 import { registerLlmHandlers } from './ipc/llm'
 import { registerPostHandlers } from './ipc/post'
 import { registerPaperHandlers } from './ipc/papers'
@@ -11,6 +12,8 @@ import { registerJobHandlers } from './ipc/jobs'
 import { registerTrackerHandlers } from './ipc/tracker'
 import { registerSystemHandlers } from './ipc/system'
 import { registerInterviewHandlers } from './ipc/interview'
+import { registerCodeLearningHandlers } from './ipc/codeLearning'
+import { wsServer } from './wsServer'
 
 nativeTheme.themeSource = 'dark'
 
@@ -20,7 +23,12 @@ let linkedinView: WebContentsView | null = null       // silent enrichment view 
 let linkedinBrowserWindow: BrowserWindow | null = null // user-facing browser window
 let linkedinChromeView: WebContentsView | null = null  // header chrome inside browser window
 let linkedinContentView: WebContentsView | null = null // LinkedIn content inside browser window
+let resumeCompareWindow: BrowserWindow | null = null
+let resumeCompareWindowReady = false
+let latestResumeComparePayload: ResumeCompareWindowPayload | null = null
 let isQuitting = false
+let captureLog: unknown[] = []   // accumulates captures during a tracking session
+let manualEnrichJobId: number | null = null  // non-null when in manual enrich mode
 
 export function getMainWindow(): BrowserWindow | null {
   return mainWindow
@@ -74,17 +82,25 @@ body {
   padding:4px 9px; color:#555;
 }
 .btn-x:hover { background:rgba(239,68,68,0.15); color:#f87171; }
+.btn-capture { border-color:#0a66c2; color:#0a66c2; }
+.btn-capture:hover { background:rgba(10,102,194,0.15); color:#3d8fd4; border-color:#3d8fd4; }
+.btn-save { border-color:#22c55e; color:#22c55e; }
+.btn-save:hover { background:rgba(34,197,94,0.15); color:#4ade80; border-color:#4ade80; }
 </style>
 </head>
 <body>
   <span class="badge">LinkedIn</span>
   <div class="url-bar" id="url-bar">linkedin.com</div>
-  <span class="hint">Log in then close this panel</span>
+  <span class="hint" id="hint">Log in then close this panel</span>
   <button class="btn" onclick="doClose()">Done</button>
+  <button class="btn btn-capture" id="btn-capture" style="display:none" onclick="doCapture()">⊙ Capture</button>
+  <button class="btn btn-save" id="btn-save" style="display:none" onclick="doSave()">↓ Save Description</button>
   <button class="btn btn-x" title="Close (Esc)" onclick="doClose()">✕</button>
   <script>
     const { ipcRenderer } = require('electron');
     function doClose() { ipcRenderer.send('linkedin-browser:close'); }
+    function doCapture() { ipcRenderer.send('linkedin-browser:capture'); }
+    function doSave() { ipcRenderer.send('linkedin-browser:save-description'); }
     window.setUrl = function(u) {
       try {
         const parsed = new URL(u);
@@ -92,6 +108,47 @@ body {
       } catch(e) {
         document.getElementById('url-bar').textContent = u;
       }
+    };
+    window.setTrackMode = function(on) {
+      var btn = document.getElementById('btn-capture');
+      btn.style.display = on ? '' : 'none';
+      document.getElementById('hint').textContent = on
+        ? 'Highlight a section, click Capture — repeat as needed, then Done'
+        : 'Log in then close this panel';
+      document.getElementById('hint').style.color = '';
+    };
+    window.showCaptureAck = function(n) {
+      var hint = document.getElementById('hint');
+      hint.textContent = '✓ Captured (' + n + ' total) — highlight next section or click Done';
+      hint.style.color = '#4ade80';
+      clearTimeout(window._ackTimer);
+      window._ackTimer = setTimeout(function() {
+        hint.textContent = 'Highlight a section, click Capture — repeat as needed, then Done';
+        hint.style.color = '';
+      }, 3000);
+    };
+    window.setManualEnrichMode = function(on) {
+      document.getElementById('btn-capture').style.display = 'none';
+      document.getElementById('btn-save').style.display = on ? '' : 'none';
+      var hint = document.getElementById('hint');
+      hint.textContent = on ? 'Highlight the job description text, then click Save Description' : 'Log in then close this panel';
+      hint.style.color = on ? '#86efac' : '';
+    };
+    window.showSaveSuccess = function() {
+      var hint = document.getElementById('hint');
+      hint.textContent = '✓ Description saved!';
+      hint.style.color = '#4ade80';
+      document.getElementById('btn-save').style.display = 'none';
+    };
+    window.showSaveError = function(msg) {
+      var hint = document.getElementById('hint');
+      hint.textContent = '✗ ' + msg;
+      hint.style.color = '#f87171';
+      clearTimeout(window._saveErrTimer);
+      window._saveErrTimer = setTimeout(function() {
+        hint.textContent = 'Highlight the job description text, then click Save Description';
+        hint.style.color = '#86efac';
+      }, 3000);
     };
   </script>
 </body>
@@ -203,10 +260,115 @@ function showLinkedInBrowserWindow(): void {
 }
 
 function hideLinkedInBrowserWindow(): void {
+  // Flush capture log to renderer (always — renderer ignores empty arrays)
+  mainWindow?.webContents.send('linkedin:captureResult', captureLog)
+  captureLog = []
+  manualEnrichJobId = null
+
   if (linkedinBrowserWindow && !linkedinBrowserWindow.isDestroyed()) {
     linkedinBrowserWindow.hide()
   }
+  if (linkedinChromeView && !linkedinChromeView.webContents.isDestroyed()) {
+    linkedinChromeView.webContents
+      .executeJavaScript('window.setTrackMode && window.setTrackMode(false); window.setManualEnrichMode && window.setManualEnrichMode(false)')
+      .catch(() => {})
+  }
   mainWindow?.focus()
+}
+
+function loadRendererWindow(targetWindow: BrowserWindow, query?: Record<string, string>): void {
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    const targetUrl = new URL(process.env['ELECTRON_RENDERER_URL'])
+    if (query) {
+      for (const [key, value] of Object.entries(query)) targetUrl.searchParams.set(key, value)
+    }
+    targetWindow.loadURL(targetUrl.toString())
+    return
+  }
+  targetWindow.loadFile(join(__dirname, '../renderer/index.html'), query ? { query } : undefined)
+}
+
+function sendResumeCompareState(open: boolean): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.webContents.send(IPC.RESUME_COMPARE_WINDOW_STATE, { open })
+}
+
+function sendResumeComparePayloadToWindow(payload: ResumeCompareWindowPayload | null): void {
+  if (!payload) return
+  if (!resumeCompareWindow || resumeCompareWindow.isDestroyed() || !resumeCompareWindowReady) return
+  resumeCompareWindow.webContents.send(IPC.RESUME_COMPARE_WINDOW_DATA, payload)
+}
+
+function closeResumeCompareWindow(): void {
+  if (!resumeCompareWindow || resumeCompareWindow.isDestroyed()) {
+    resumeCompareWindow = null
+    resumeCompareWindowReady = false
+    sendResumeCompareState(false)
+    return
+  }
+  resumeCompareWindow.close()
+}
+
+function openResumeCompareWindow(payload: ResumeCompareWindowPayload): void {
+  latestResumeComparePayload = payload
+
+  if (resumeCompareWindow && !resumeCompareWindow.isDestroyed()) {
+    resumeCompareWindow.show()
+    resumeCompareWindow.focus()
+    sendResumeCompareState(true)
+    sendResumeComparePayloadToWindow(payload)
+    return
+  }
+
+  const fallbackW = 760
+  const fallbackH = 920
+  const [mx, my] = mainWindow && !mainWindow.isDestroyed() ? mainWindow.getPosition() : [120, 120]
+  const [mw] = mainWindow && !mainWindow.isDestroyed() ? mainWindow.getSize() : [1400, 900]
+
+  resumeCompareWindowReady = false
+  resumeCompareWindow = new BrowserWindow({
+    x: mx + Math.max(24, mw - fallbackW - 24),
+    y: my + 40,
+    width: fallbackW,
+    height: fallbackH,
+    minWidth: 520,
+    minHeight: 480,
+    show: false,
+    resizable: true,
+    autoHideMenuBar: true,
+    backgroundColor: '#1a1a1a',
+    title: 'Resume Compare',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false,
+      contextIsolation: true,
+    },
+  })
+
+  resumeCompareWindow.on('closed', () => {
+    resumeCompareWindow = null
+    resumeCompareWindowReady = false
+    sendResumeCompareState(false)
+  })
+
+  resumeCompareWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
+  resumeCompareWindow.webContents.on('did-finish-load', () => {
+    resumeCompareWindowReady = true
+    sendResumeComparePayloadToWindow(latestResumeComparePayload)
+  })
+
+  resumeCompareWindow.once('ready-to-show', () => {
+    resumeCompareWindow?.show()
+    sendResumeCompareState(true)
+    sendResumeComparePayloadToWindow(latestResumeComparePayload)
+  })
+
+  loadRendererWindow(resumeCompareWindow, { view: 'resume-compare' })
 }
 
 // ── App window ───────────────────────────────────────────────────────────────
@@ -281,11 +443,7 @@ function createWindow(): void {
   enrichmentWindow.contentView.addChildView(linkedinView)
   linkedinView.setBounds({ x: 0, y: 0, width: 1280, height: 900 })
 
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
-  } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
-  }
+  loadRendererWindow(mainWindow)
 }
 
 app.whenReady().then(() => {
@@ -298,6 +456,7 @@ app.whenReady().then(() => {
   // Initialize DB
   const db = openDatabase()
   runMigrations(db)
+  migrateSettings()
 
   // Register all IPC handlers
   registerSettingsHandlers()
@@ -308,8 +467,43 @@ app.whenReady().then(() => {
   registerTrackerHandlers()
   registerSystemHandlers()
   registerInterviewHandlers()
+  registerCodeLearningHandlers()
+
+  // Start WebSocket bridge for VS Code extension
+  wsServer.start().catch(err => console.warn('[main] wsServer.start failed:', err))
+
+  // Relay inbound WS messages → renderer
+  wsServer.setMessageHandler((msg) => {
+    mainWindow?.webContents.send('ws:message', msg)
+  })
+
+  // Renderer → WS broadcast
+  ipcMain.on('ws:send', (_evt, msg) => {
+    wsServer.broadcast(msg)
+  })
 
   createWindow()
+
+  // ── Resume Compare window IPC ────────────────────────────────────────────
+
+  ipcMain.handle(IPC.RESUME_COMPARE_WINDOW_OPEN, (_evt, payload: ResumeCompareWindowPayload) => {
+    openResumeCompareWindow(payload)
+    return { open: true }
+  })
+
+  ipcMain.handle(IPC.RESUME_COMPARE_WINDOW_UPDATE, (_evt, payload: ResumeCompareWindowPayload) => {
+    latestResumeComparePayload = payload
+    if (resumeCompareWindow && !resumeCompareWindow.isDestroyed()) {
+      sendResumeComparePayloadToWindow(payload)
+      return { open: true }
+    }
+    return { open: false }
+  })
+
+  ipcMain.handle(IPC.RESUME_COMPARE_WINDOW_CLOSE, () => {
+    closeResumeCompareWindow()
+    return { open: false }
+  })
 
   // ── LinkedIn browser IPC ──────────────────────────────────────────────────
 
@@ -334,6 +528,160 @@ app.whenReady().then(() => {
   // Sent by the chrome view's close/done buttons (ipcRenderer.send, not invoke)
   ipcMain.on('linkedin-browser:close', () => {
     hideLinkedInBrowserWindow()
+  })
+
+  ipcMain.handle('linkedin:setTrackMode', (_evt, on: boolean) => {
+    if (on) captureLog = []   // fresh log for each new tracking session
+    if (linkedinChromeView && !linkedinChromeView.webContents.isDestroyed()) {
+      linkedinChromeView.webContents
+        .executeJavaScript(`window.setTrackMode && window.setTrackMode(${on})`)
+        .catch(() => {})
+    }
+  })
+
+  ipcMain.handle('linkedin:setManualEnrich', (_evt, jobId: number) => {
+    manualEnrichJobId = jobId
+    if (linkedinChromeView && !linkedinChromeView.webContents.isDestroyed()) {
+      linkedinChromeView.webContents
+        .executeJavaScript('window.setManualEnrichMode && window.setManualEnrichMode(true)')
+        .catch(() => {})
+    }
+  })
+
+  ipcMain.on('linkedin-browser:save-description', async () => {
+    if (!linkedinContentView || linkedinContentView.webContents.isDestroyed()) return
+    if (!manualEnrichJobId) return
+    const jobId = manualEnrichJobId
+    try {
+      const result = await linkedinContentView.webContents.executeJavaScript(`
+        (function() {
+          const sel = window.getSelection()
+          if (!sel || sel.rangeCount === 0) return { error: 'No text selected — highlight the job description first' }
+          const text = sel.toString().trim()
+          if (!text) return { error: 'No text selected — highlight the job description first' }
+          const range = sel.getRangeAt(0)
+          let el = range.commonAncestorContainer
+          if (el.nodeType === 3) el = el.parentElement
+          const chain = []
+          let current = el
+          while (current && current.tagName && current !== document.body && chain.length < 6) {
+            const id = current.id ? '#' + current.id : ''
+            const classes = [...current.classList].slice(0, 4).map(c => '.' + c).join('')
+            const tag = current.tagName.toLowerCase()
+            chain.unshift({ tag, id, classes, selector: tag + id + classes })
+            current = current.parentElement
+          }
+          const selectors = chain.filter(n => n.id || n.classes).map(n => n.selector).reverse()
+          return { text: text.slice(0, 20000), chain, selectors, url: location.href }
+        })()
+      `)
+      if (result.error) {
+        if (linkedinChromeView && !linkedinChromeView.webContents.isDestroyed()) {
+          linkedinChromeView.webContents
+            .executeJavaScript(`window.showSaveError && window.showSaveError(${JSON.stringify(result.error)})`)
+            .catch(() => {})
+        }
+        return
+      }
+      // Show success in chrome, then hide after a moment
+      if (linkedinChromeView && !linkedinChromeView.webContents.isDestroyed()) {
+        linkedinChromeView.webContents
+          .executeJavaScript('window.showSaveSuccess && window.showSaveSuccess()')
+          .catch(() => {})
+      }
+      manualEnrichJobId = null
+      mainWindow?.webContents.send('linkedin:manualEnrichResult', { jobId, ...result })
+      setTimeout(() => hideLinkedInBrowserWindow(), 1500)
+    } catch (err) {
+      if (linkedinChromeView && !linkedinChromeView.webContents.isDestroyed()) {
+        linkedinChromeView.webContents
+          .executeJavaScript(`window.showSaveError && window.showSaveError(${JSON.stringify(String(err))})`)
+          .catch(() => {})
+      }
+    }
+  })
+
+  ipcMain.on('linkedin-browser:capture', async () => {
+    if (!linkedinContentView || linkedinContentView.webContents.isDestroyed()) return
+    try {
+      const entry = await linkedinContentView.webContents.executeJavaScript(`
+        (function() {
+          // ── Selection ────────────────────────────────────────────────────────
+          const sel = window.getSelection()
+          if (!sel || sel.rangeCount === 0) return { error: 'No text selected — highlight some text first' }
+          const selectedText = sel.toString().trim()
+          if (!selectedText) return { error: 'No text selected — highlight some text first' }
+          const range = sel.getRangeAt(0)
+          let el = range.commonAncestorContainer
+          if (el.nodeType === 3) el = el.parentElement
+
+          const chain = []
+          let current = el
+          while (current && current.tagName && current !== document.body && chain.length < 6) {
+            const id = current.id ? '#' + current.id : ''
+            const classes = [...current.classList].slice(0, 4).map(c => '.' + c).join('')
+            const tag = current.tagName.toLowerCase()
+            chain.unshift({
+              tag, id, classes,
+              selector: tag + id + classes,
+              fullText: (current.innerText || '').slice(0, 80).replace(/\\n/g, ' ')
+            })
+            current = current.parentElement
+          }
+
+          const selectors = chain
+            .filter(n => n.id || n.classes)
+            .map(n => n.selector)
+            .reverse()
+
+          // ── Expand / show-more button scan ───────────────────────────────────
+          const expandButtons = []
+          const seen = new Set()
+          // Text-match candidates
+          const btns = document.querySelectorAll('button, a, [role="button"], span[tabindex]')
+          for (let i = 0; i < btns.length; i++) {
+            const b = btns[i]
+            const txt = (b.innerText || '').trim()
+            const lower = txt.toLowerCase()
+            if (lower === 'show more' || lower === 'see more' || lower === 'show more description' ||
+                txt === '…more' || txt === '...more' || /^[…\\.]{1,3}more$/i.test(txt)) {
+              const id = b.id ? '#' + b.id : ''
+              const cls = [...b.classList].slice(0, 4).map(c => '.' + c).join('')
+              const sel2 = b.tagName.toLowerCase() + id + cls
+              if (!seen.has(sel2)) { seen.add(sel2); expandButtons.push({ text: txt, selector: sel2, ariaLabel: b.getAttribute('aria-label') || '' }) }
+            }
+          }
+          // aria-expanded=false candidates
+          const ariaEls = document.querySelectorAll('[aria-expanded="false"]')
+          for (let j = 0; j < ariaEls.length; j++) {
+            const b = ariaEls[j]
+            const label = (b.getAttribute('aria-label') || '').toLowerCase()
+            if (/show|more|expand|description/i.test(label)) {
+              const id = b.id ? '#' + b.id : ''
+              const cls = [...b.classList].slice(0, 4).map(c => '.' + c).join('')
+              const sel2 = b.tagName.toLowerCase() + id + cls
+              if (!seen.has(sel2)) { seen.add(sel2); expandButtons.push({ text: (b.innerText || '').trim(), selector: sel2, ariaLabel: b.getAttribute('aria-label') || '' }) }
+            }
+          }
+
+          return { selectedText: selectedText.slice(0, 300), chain, selectors, expandButtons, url: location.href }
+        })()
+      `)
+      captureLog.push(entry)
+      // Acknowledge in the chrome bar
+      if (linkedinChromeView && !linkedinChromeView.webContents.isDestroyed()) {
+        linkedinChromeView.webContents
+          .executeJavaScript(`window.showCaptureAck && window.showCaptureAck(${captureLog.length})`)
+          .catch(() => {})
+      }
+    } catch (err) {
+      captureLog.push({ error: String(err) })
+      if (linkedinChromeView && !linkedinChromeView.webContents.isDestroyed()) {
+        linkedinChromeView.webContents
+          .executeJavaScript(`window.showCaptureAck && window.showCaptureAck(${captureLog.length})`)
+          .catch(() => {})
+      }
+    }
   })
 
   ipcMain.handle('linkedin:logout', () => {
@@ -363,5 +711,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   isQuitting = true
   closeDatabase()
+  wsServer.close()
+  if (resumeCompareWindow && !resumeCompareWindow.isDestroyed()) resumeCompareWindow.destroy()
   if (enrichmentWindow && !enrichmentWindow.isDestroyed()) enrichmentWindow.destroy()
 })

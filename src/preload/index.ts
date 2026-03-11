@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import { IPC } from '../shared/types'
+import type { ResumeCompareWindowPayload, ResumeCompareWindowState, VSCodeMessage } from '../shared/types'
 
 // Expose all IPC channels via a typed API
 const api = {
@@ -15,6 +16,9 @@ const api = {
   getResumeBases: () => ipcRenderer.invoke(IPC.GET_RESUME_BASES),
   saveResumeBase: (base: Record<string, unknown>) => ipcRenderer.invoke(IPC.SAVE_RESUME_BASE, base),
   deleteResumeBase: (id: number) => ipcRenderer.invoke(IPC.DELETE_RESUME_BASE, id),
+  getResumeBaseVersions: (baseId: number) => ipcRenderer.invoke(IPC.GET_RESUME_BASE_VERSIONS, baseId),
+  restoreResumeBaseVersion: (baseId: number, versionId: number) => ipcRenderer.invoke(IPC.RESTORE_RESUME_BASE_VERSION, baseId, versionId),
+  parseResumeFile: (filePath: string) => ipcRenderer.invoke(IPC.PARSE_RESUME_FILE, filePath),
 
   // LLM
   llmCall: (req: Record<string, unknown>) => ipcRenderer.invoke(IPC.LLM_CALL, req),
@@ -59,10 +63,24 @@ const api = {
   jobGetNotes: (jobId: number) => ipcRenderer.invoke(IPC.JOB_GET_NOTES, jobId),
   jobSaveNotes: (jobId: number, content: string) => ipcRenderer.invoke(IPC.JOB_SAVE_NOTES, jobId, content),
   jobMarkApplied: (jobId: number, data: Record<string, unknown>) => ipcRenderer.invoke(IPC.JOB_MARK_APPLIED, jobId, data),
+  jobExportMaterials: (payload: Record<string, unknown>) => ipcRenderer.invoke(IPC.JOB_EXPORT_MATERIALS, payload),
   jobExportDocx: (jobId: number, type: string, html: string, lastName: string) => ipcRenderer.invoke(IPC.JOB_EXPORT_DOCX, jobId, type, html, lastName),
   jobOpenFile: (filePath: string) => ipcRenderer.invoke(IPC.JOB_OPEN_FILE, filePath),
   jobFetchCompanyPage: (company: string, url?: string) => ipcRenderer.invoke(IPC.JOB_FETCH_COMPANY_PAGE, company, url),
   jobPreviewUrl: (url: string) => ipcRenderer.invoke(IPC.JOB_PREVIEW_URL, url),
+  resumeCompareOpen: (payload: ResumeCompareWindowPayload) => ipcRenderer.invoke(IPC.RESUME_COMPARE_WINDOW_OPEN, payload),
+  resumeCompareUpdate: (payload: ResumeCompareWindowPayload) => ipcRenderer.invoke(IPC.RESUME_COMPARE_WINDOW_UPDATE, payload),
+  resumeCompareClose: () => ipcRenderer.invoke(IPC.RESUME_COMPARE_WINDOW_CLOSE),
+  onResumeCompareData: (cb: (payload: ResumeCompareWindowPayload) => void): (() => void) => {
+    const handler = (_: unknown, payload: ResumeCompareWindowPayload) => cb(payload)
+    ipcRenderer.on(IPC.RESUME_COMPARE_WINDOW_DATA, handler)
+    return () => ipcRenderer.removeListener(IPC.RESUME_COMPARE_WINDOW_DATA, handler)
+  },
+  onResumeCompareState: (cb: (state: ResumeCompareWindowState) => void): (() => void) => {
+    const handler = (_: unknown, state: ResumeCompareWindowState) => cb(state)
+    ipcRenderer.on(IPC.RESUME_COMPARE_WINDOW_STATE, handler)
+    return () => ipcRenderer.removeListener(IPC.RESUME_COMPARE_WINDOW_STATE, handler)
+  },
 
   // Tracker
   trackerGetAll: () => ipcRenderer.invoke(IPC.TRACKER_GET_ALL),
@@ -79,7 +97,97 @@ const api = {
   showLinkedInBrowser: () => ipcRenderer.invoke(IPC.SHOW_LINKEDIN_BROWSER),
   hideLinkedInBrowser: () => ipcRenderer.invoke(IPC.HIDE_LINKEDIN_BROWSER),
   linkedinOpenUrl: (url: string) => ipcRenderer.invoke(IPC.LINKEDIN_OPEN_URL, url),
+  linkedinProbeUrls: (urls: string[]) => ipcRenderer.invoke(IPC.LINKEDIN_PROBE_URLS, urls),
   linkedinLogout: () => ipcRenderer.invoke(IPC.LINKEDIN_LOGOUT),
+  linkedinSetTrackMode: (on: boolean) => ipcRenderer.invoke(IPC.LINKEDIN_SET_TRACK_MODE, on),
+  onLinkedinCaptureResult: (cb: (report: unknown) => void): (() => void) => {
+    const handler = (_: unknown, data: unknown) => cb(data)
+    ipcRenderer.on(IPC.LINKEDIN_CAPTURE_RESULT, handler)
+    return () => ipcRenderer.removeListener(IPC.LINKEDIN_CAPTURE_RESULT, handler)
+  },
+  linkedinSetManualEnrich: (jobId: number) => ipcRenderer.invoke(IPC.LINKEDIN_SET_MANUAL_ENRICH, jobId),
+  onLinkedinManualEnrichResult: (cb: (result: unknown) => void): (() => void) => {
+    const handler = (_: unknown, data: unknown) => cb(data)
+    ipcRenderer.on(IPC.LINKEDIN_MANUAL_ENRICH_RESULT, handler)
+    return () => ipcRenderer.removeListener(IPC.LINKEDIN_MANUAL_ENRICH_RESULT, handler)
+  },
+  patternSave: (pattern: Record<string, unknown>) => ipcRenderer.invoke(IPC.PATTERN_SAVE, pattern),
+
+  // VS Code WebSocket bridge
+  wsSend: (msg: VSCodeMessage) => ipcRenderer.send('ws:send', msg),
+  onWsMessage: (cb: (msg: VSCodeMessage) => void): (() => void) => {
+    const handler = (_: unknown, msg: VSCodeMessage) => cb(msg)
+    ipcRenderer.on('ws:message', handler)
+    return () => ipcRenderer.removeListener('ws:message', handler)
+  },
+
+  // Code Learning — file ops
+  codeLearningOpenInVSCode: (folderPath: string) => ipcRenderer.invoke(IPC.CODE_LEARNING_OPEN_IN_VSCODE, folderPath),
+  codeLearningScaffoldProject: (folderPath: string) => ipcRenderer.invoke(IPC.CODE_LEARNING_SCAFFOLD_PROJECT, folderPath),
+  codeLearningUpdateActiveProjects: (projects: Array<{ id: string; folderPath: string | null; activeStepId: string | null; targetFile: string | null }>) =>
+    ipcRenderer.invoke(IPC.CODE_LEARNING_UPDATE_ACTIVE_PROJECTS, projects),
+  codeLearningUpdateProjectFolder: (projectId: string, folderPath: string) =>
+    ipcRenderer.invoke(IPC.CODE_LEARNING_UPDATE_PROJECT_FOLDER, projectId, folderPath),
+
+  // Code Learning — LLM (request/response)
+  codeLearningGenerateProposal: (payload: Record<string, unknown>) =>
+    ipcRenderer.invoke(IPC.CODE_LEARNING_GENERATE_PROPOSAL, payload),
+  codeLearningReviewCode: (payload: Record<string, unknown>) =>
+    ipcRenderer.invoke(IPC.CODE_LEARNING_REVIEW_CODE, payload),
+
+  // Code Learning — LLM (streaming fire-and-forget)
+  codeLearningGenerateCurriculum: (payload: Record<string, unknown>) =>
+    ipcRenderer.send(IPC.CODE_LEARNING_GENERATE_CURRICULUM, payload),
+  codeLearningCoachingMessage: (payload: Record<string, unknown>) =>
+    ipcRenderer.send(IPC.CODE_LEARNING_COACHING_MESSAGE, payload),
+
+  // Code Learning — streaming event listeners
+  onCurriculumChunk: (cb: (token: string) => void): (() => void) => {
+    const handler = (_: unknown, token: string) => cb(token)
+    ipcRenderer.on('code-learning:curriculum-chunk', handler)
+    return () => ipcRenderer.removeListener('code-learning:curriculum-chunk', handler)
+  },
+  onCurriculumStepReady: (cb: (step: { step_number: number; title: string }) => void): (() => void) => {
+    const handler = (_: unknown, step: { step_number: number; title: string }) => cb(step)
+    ipcRenderer.on('code-learning:step-ready', handler)
+    return () => ipcRenderer.removeListener('code-learning:step-ready', handler)
+  },
+  onCurriculumDone: (cb: (project: Record<string, unknown>) => void): (() => void) => {
+    const handler = (_: unknown, project: Record<string, unknown>) => cb(project)
+    ipcRenderer.on('code-learning:curriculum-done', handler)
+    return () => ipcRenderer.removeListener('code-learning:curriculum-done', handler)
+  },
+  onCurriculumError: (cb: (err: string) => void): (() => void) => {
+    const handler = (_: unknown, err: string) => cb(err)
+    ipcRenderer.on('code-learning:curriculum-error', handler)
+    return () => ipcRenderer.removeListener('code-learning:curriculum-error', handler)
+  },
+  onCoachingChunk: (cb: (token: string) => void): (() => void) => {
+    const handler = (_: unknown, token: string) => cb(token)
+    ipcRenderer.on('code-learning:coaching-chunk', handler)
+    return () => ipcRenderer.removeListener('code-learning:coaching-chunk', handler)
+  },
+  onCoachingDone: (cb: (result: { content: string }) => void): (() => void) => {
+    const handler = (_: unknown, result: { content: string }) => cb(result)
+    ipcRenderer.on('code-learning:coaching-done', handler)
+    return () => ipcRenderer.removeListener('code-learning:coaching-done', handler)
+  },
+  onCoachingError: (cb: (err: string) => void): (() => void) => {
+    const handler = (_: unknown, err: string) => cb(err)
+    ipcRenderer.on('code-learning:coaching-error', handler)
+    return () => ipcRenderer.removeListener('code-learning:coaching-error', handler)
+  },
+
+  // Code Learning — status
+  getVsCodeStatus: () => ipcRenderer.invoke(IPC.CODE_LEARNING_GET_WS_STATUS),
+
+  // Code Learning — DB CRUD
+  codeLearningGetActiveProject: () => ipcRenderer.invoke(IPC.CODE_LEARNING_GET_ACTIVE_PROJECT),
+  codeLearningGetStepMessages: (stepId: string) => ipcRenderer.invoke(IPC.CODE_LEARNING_GET_STEP_MESSAGES, stepId),
+  codeLearningUpdateStep: (payload: Record<string, unknown>) => ipcRenderer.invoke(IPC.CODE_LEARNING_UPDATE_STEP, payload),
+  codeLearningUpdateHints: (payload: Record<string, unknown>) => ipcRenderer.invoke(IPC.CODE_LEARNING_UPDATE_HINTS, payload),
+  codeLearningSaveProject: (payload: Record<string, unknown>) => ipcRenderer.invoke(IPC.CODE_LEARNING_SAVE_PROJECT, payload),
+  codeLearningSaveMessage: (payload: Record<string, unknown>) => ipcRenderer.invoke(IPC.CODE_LEARNING_SAVE_MESSAGE, payload),
 
   // Interview Prep — CRUD
   interviewGetBrief: (jobId: number) => ipcRenderer.invoke(IPC.INTERVIEW_GET_BRIEF, jobId),

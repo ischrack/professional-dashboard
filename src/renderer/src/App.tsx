@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from 'react'
 import { MemoryRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import {
-  FileText, BookOpen, Briefcase, BarChart2, Settings, ChevronLeft, ChevronRight, Mic2
+  FileText, BookOpen, Briefcase, BarChart2, Settings, ChevronLeft, ChevronRight, Mic2, GraduationCap
 } from 'lucide-react'
 import { ToastProvider } from './shared/hooks/useToast'
 import PostGenerator from './modules/PostGenerator/PostGenerator'
 import PaperDiscovery from './modules/PaperDiscovery/PaperDiscovery'
 import JobSearch from './modules/JobSearch/JobSearch'
+import ResumeCompareWindow from './modules/JobSearch/ResumeCompareWindow'
 import ApplicationTracker from './modules/ApplicationTracker/ApplicationTracker'
+import CodeLearning from './modules/CodeLearning/CodeLearning'
 import SettingsPanel from './settings/SettingsPanel'
 import clsx from 'clsx'
 
@@ -16,6 +18,7 @@ const NAV_ITEMS = [
   { path: '/papers', icon: BookOpen, label: 'Paper Discovery' },
   { path: '/jobs', icon: Briefcase, label: 'Job Search' },
   { path: '/tracker', icon: BarChart2, label: 'Tracker' },
+  { path: '/learn', icon: GraduationCap, label: 'Code Learning' },
 ]
 
 function Sidebar({ collapsed, onToggle, hasJobs }: { collapsed: boolean; onToggle: () => void; hasJobs: boolean }) {
@@ -168,6 +171,7 @@ function AppShell() {
           <Route path="/papers" element={<PaperDiscovery />} />
           <Route path="/jobs" element={<JobSearch />} />
           <Route path="/tracker" element={<ApplicationTracker />} />
+          <Route path="/learn" element={<CodeLearning />} />
         </Routes>
       </main>
     </div>
@@ -175,6 +179,15 @@ function AppShell() {
 }
 
 export default function App() {
+  const view = new URLSearchParams(window.location.search).get('view')
+  if (view === 'resume-compare') {
+    return (
+      <ToastProvider>
+        <ResumeCompareWindow />
+      </ToastProvider>
+    )
+  }
+
   return (
     <ToastProvider>
       <MemoryRouter>

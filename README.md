@@ -29,6 +29,46 @@ Two-phase interview preparation scoped to each job.
 
 Sessions auto-save after every exchange. Paused sessions can be resumed. A "Save Key Takeaways to Notes" button appends a summary to the job's Notes tab.
 
+### Code Learning
+
+Project-based coding curriculum generator and step-by-step coach for biomedical scientists learning to write production-quality bioinformatics code.
+
+**How it works:**
+
+1. **Intake** — Describe what you want to build, pick your languages (Python, R, Nextflow, Snakemake, SQL, Bash, Airflow, or Mixed), set your experience level and available time. "Surprise me" picks a random bioinformatics project.
+2. **Proposal** — The LLM generates a specific, resume-worthy project proposal with a title, summary, learning objectives, prerequisite installs, and estimated step count. Regenerate as many times as you like.
+3. **Curriculum generation** — Accept the proposal and watch step titles stream in as the full curriculum generates. Each step includes 2–4 paragraphs of concept context, precise instructions, 3–5 progressive hints, a target file, and validation criteria.
+4. **Active project** — Work through steps in VS Code. Reveal hints, ask the coaching chat, and request code review when ready. Mark steps complete manually or via the VS Code extension.
+
+**Coaching chat** answers questions, explains concepts (anchored to biology where possible), and gives feedback on your code — but never provides complete working solutions unless you are genuinely stuck after multiple attempts.
+
+**Code review** sends your current file to the LLM for structured feedback: strengths, blocking issues, minor issues, style notes, and a specific next-steps nudge. Requires the VS Code extension to be connected.
+
+Progress, chat history, and hint counts are persisted in SQLite and restored on app restart.
+
+#### VS Code Extension
+
+The companion extension connects VS Code to the running dashboard app over a local WebSocket. It activates automatically when you open a folder containing a `.professional-dashboard-project` marker file (created when you scaffold a project from the dashboard).
+
+**One-time install:**
+
+```bash
+cd vscode-extension
+npm install && npm run compile && npx vsce package
+code --install-extension professional-dashboard-code-learning-0.1.0.vsix
+```
+
+**What it provides:**
+- Status bar: `$(mortar-board) Connected` / `Disconnected` — click to open a command menu
+- `Code Learning: Mark Step Complete` — marks the active step done and advances to the next
+- `Code Learning: Review This File` — sends the active editor file to the dashboard for LLM code review
+- `Code Learning: Open Dashboard` — brings the Professional Dashboard app to focus
+- Optional: `codeLearning.reviewOnSave` setting sends the file for review on every save (off by default)
+
+The extension reads `~/.professional-dashboard/ws-port` to find the dashboard's WebSocket port and reconnects automatically with exponential backoff if the connection is lost.
+
+See [`vscode-extension/README.md`](vscode-extension/README.md) for full build and install instructions.
+
 ### Post Generator
 Generate LinkedIn posts from scientific papers, articles, or raw text. Iterative chat-based revision workflow. Supports PDF upload and URL ingestion.
 
@@ -90,16 +130,18 @@ For day-to-day use, `npm run dev` is all you need. `npm run rebuild` is not for 
 
 ### Process model
 ```
-Main process (Node)         Renderer process (React)
-├── db/                     ├── modules/
-│   ├── index.ts            │   ├── JobSearch/
-│   └── schema.ts           │   │   ├── ApplicationWorkspace.tsx
-├── ipc/                    │   │   └── interview/
-│   ├── jobs.ts             │   ├── PostGenerator/
-│   ├── interview.ts        │   ├── PaperDiscovery/
+Main process (Node)         Renderer process (React)        VS Code Extension
+├── db/                     ├── modules/                    ├── extension.ts
+│   ├── index.ts            │   ├── JobSearch/              │   (WebSocket client)
+│   └── schema.ts           │   │   ├── ApplicationWorkspace│   ↕ ws://localhost:52049+
+├── ipc/                    │   │   └── interview/          └── ~/.professional-dashboard/
+│   ├── jobs.ts             │   ├── PostGenerator/              ├── ws-port
+│   ├── interview.ts        │   ├── PaperDiscovery/             └── active-projects.json
+│   ├── codeLearning.ts     │   ├── CodeLearning/
 │   ├── llm.ts              │   └── ApplicationTracker/
 │   ├── settings.ts         └── settings/
 │   └── ...                     └── SettingsPanel.tsx
+├── wsServer.ts
 └── index.ts
 ```
 
@@ -120,7 +162,7 @@ renderer                           main
 SQLite at `~/Library/Application Support/professional-dashboard/dashboard.db`.
 Configurable to iCloud Drive / Dropbox via **Settings → Storage** (restart required; do not open on multiple machines simultaneously).
 
-Schema: `jobs`, `application_materials`, `qa_entries`, `interview_briefs`, `interview_sessions`, `interview_exchanges`, `job_notes`, `resume_bases`, `post_sessions`, `papers`, `search_profiles`.
+Schema: `jobs`, `application_materials`, `qa_entries`, `interview_briefs`, `interview_sessions`, `interview_exchanges`, `job_notes`, `resume_bases`, `post_sessions`, `papers`, `search_profiles`, `code_learning_projects`, `code_learning_steps`, `code_learning_messages`.
 
 ---
 
@@ -130,8 +172,13 @@ Schema: `jobs`, `application_materials`, `qa_entries`, `interview_briefs`, `inte
 |---------|---------|-------------|
 | API Keys | Anthropic / OpenAI / PubMed | Encrypted key storage |
 | Models | Per-module model | Model for post, paper, resume, cover letter, Q&A generation |
+| Models | Code Learning Coach | Model for proposals, curriculum, coaching chat, and code review (default: claude-opus-4-6) |
 | Interview Prep | Research model | Model for web research (use most capable available) |
 | Interview Prep | Default research depth | Quick / Deep / Always ask |
+| Code Learning | Default project folder | Where new projects are scaffolded (default: ~/Projects) |
+| Code Learning | Review on save | Auto-send active file for LLM review on every VS Code save (off by default — can be disruptive) |
+| Code Learning | Ollama endpoint | Local model support (coming soon) |
+| Code Learning | VS Code extension | Connection status indicator and install command |
 | Resume Bases | Named resumes | Master resumes used as generation context |
 | Storage | Output folder | Where exported DOCX files are saved |
 | Storage | Database location | Relocate DB for cloud sync |

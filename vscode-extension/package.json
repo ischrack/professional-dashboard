@@ -1,0 +1,55 @@
+{
+  "name": "professional-dashboard-code-learning",
+  "displayName": "Professional Dashboard — Code Learning",
+  "description": "VS Code companion for the Professional Dashboard Code Learning module",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "workspaceContains:.professional-dashboard-project"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codeLearning.markStepComplete",
+        "title": "Code Learning: Mark Step Complete"
+      },
+      {
+        "command": "codeLearning.reviewThisFile",
+        "title": "Code Learning: Review This File"
+      },
+      {
+        "command": "codeLearning.openDashboard",
+        "title": "Code Learning: Open Dashboard"
+      }
+    ],
+    "configuration": {
+      "title": "Code Learning",
+      "properties": {
+        "codeLearning.reviewOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically send file contents for review on save"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.74.0",
+    "@types/ws": "^8.5.10",
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.4.5"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

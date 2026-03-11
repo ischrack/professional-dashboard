@@ -96,6 +96,57 @@ interface LiveFeedbackSessionProps {
   onExchangeSaved: () => void
 }
 
+function parseLiveFeedbackResponse(content: string): LiveFeedbackResponse | null {
+  const raw = (content || '').trim()
+  if (!raw) return null
+
+  const tryParse = (text: string): LiveFeedbackResponse | null => {
+    try {
+      const parsed = JSON.parse(text) as LiveFeedbackResponse
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        'sessionComplete' in parsed &&
+        ('nextQuestion' in parsed || 'feedback' in parsed)
+      ) {
+        return parsed
+      }
+      return null
+    } catch {
+      return null
+    }
+  }
+
+  // 1) Direct parse
+  const direct = tryParse(raw)
+  if (direct) return direct
+
+  // 2) JSON fenced block
+  const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fenceMatch?.[1]) {
+    const fenced = tryParse(fenceMatch[1].trim())
+    if (fenced) return fenced
+  }
+
+  // 3) Balanced object scan (find a valid JSON object in mixed text)
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] !== '{') continue
+    let depth = 0
+    for (let j = i; j < raw.length; j++) {
+      if (raw[j] === '{') depth++
+      if (raw[j] === '}') depth--
+      if (depth === 0) {
+        const candidate = raw.slice(i, j + 1)
+        const parsed = tryParse(candidate)
+        if (parsed) return parsed
+        break
+      }
+    }
+  }
+
+  return null
+}
+
 export default function LiveFeedbackSession({
   session,
   exchanges,
@@ -108,7 +159,6 @@ export default function LiveFeedbackSession({
   const { toast } = useToast()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [answer, setAnswer] = useState('')
-  const [questionNumber, setQuestionNumber] = useState(1)
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamBuffer, setStreamBuffer] = useState('')
   const [currentParsedResponse, setCurrentParsedResponse] = useState<LiveFeedbackResponse | null>(null)
@@ -118,12 +168,18 @@ export default function LiveFeedbackSession({
   const scrollRef = useRef<HTMLDivElement>(null)
   const cleanupRef = useRef<(() => void)[]>([])
   const streamAccRef = useRef('')
+  const initializedRef = useRef(false)
+  const requestInFlightRef = useRef(false)
 
   const models = (settings.models as Record<string, string>) || {}
   const model = models.interviewResearch || 'claude-sonnet-4-6'
   const provider: 'anthropic' | 'openai' = model.startsWith('gpt') ? 'openai' : 'anthropic'
+  const currentQuestionNumber = messages.filter(m => m.role === 'user').length + 1
 
   useEffect(() => {
+    if (initializedRef.current) return
+    initializedRef.current = true
+
     // Initialize from existing exchanges
     if (exchanges.length > 0) {
       const rebuilt: ChatMessage[] = []
@@ -147,15 +203,18 @@ export default function LiveFeedbackSession({
         }
       }
       setMessages(rebuilt)
-      setQuestionNumber(exchanges.length + 1)
     } else if (session.status !== 'completed') {
       // New session — ask first question
       askNextQuestion(null, [])
     }
 
+  }, [])
+
+  useEffect(() => {
     return () => {
       cleanupRef.current.forEach(fn => fn())
       cleanupRef.current = []
+      requestInFlightRef.current = false
     }
   }, [])
 
@@ -200,6 +259,9 @@ Keep questions realistic and professional. Vary phrasing naturally. For behavior
   }
 
   const askNextQuestion = useCallback(async (lastAnswer: string | null, currentMessages: ChatMessage[]) => {
+    if (requestInFlightRef.current) return
+    requestInFlightRef.current = true
+
     setIsStreaming(true)
     setWaitingForParse(false)
     streamAccRef.current = ''
@@ -218,7 +280,11 @@ Keep questions realistic and professional. Vary phrasing naturally. For behavior
     }
 
     if (lastAnswer !== null) {
-      apiMessages.push({ role: 'user', content: lastAnswer })
+      const lastApiMsg = apiMessages[apiMessages.length - 1]
+      const alreadyIncluded = lastApiMsg?.role === 'user' && lastApiMsg?.content === lastAnswer
+      if (!alreadyIncluded) {
+        apiMessages.push({ role: 'user', content: lastAnswer })
+      }
     } else if (apiMessages.length === 0) {
       // First question
       apiMessages.push({ role: 'user', content: 'Please begin the interview.' })
@@ -234,30 +300,35 @@ Keep questions realistic and professional. Vary phrasing naturally. For behavior
     })
 
     const unDone = window.api.onInterviewChatDone((result: Record<string, unknown>) => {
+      requestInFlightRef.current = false
       const fullContent = (result.content as string) || streamAccRef.current
       setIsStreaming(false)
       setWaitingForParse(true)
       setStreamBuffer('')
 
-      // Parse JSON response
-      let parsed: LiveFeedbackResponse | null = null
-      try {
-        // Extract JSON from response (may have wrapping text)
-        const jsonMatch = fullContent.match(/\{[\s\S]*\}/)
-        if (jsonMatch) {
-          parsed = JSON.parse(jsonMatch[0])
-        }
-      } catch {
-        toast('error', 'Could not parse interview response. The model may have returned invalid JSON.')
-        setIsStreaming(false)
-        setWaitingForParse(false)
-        return
-      }
-
+      // Parse JSON response, but gracefully recover to plain-question mode
+      let parsed = parseLiveFeedbackResponse(fullContent)
       if (!parsed) {
-        setIsStreaming(false)
-        setWaitingForParse(false)
-        return
+        const fallbackQuestion = fullContent.trim()
+        if (fallbackQuestion) {
+          parsed = {
+            feedback: null,
+            nextQuestion: fallbackQuestion,
+            sessionComplete: false,
+            questionType: 'behavioral',
+          }
+          toast(
+            'error',
+            lastAnswer === null
+              ? 'Model returned non-JSON response. Recovered and used it as the first question.'
+              : 'Model returned non-JSON response. Recovered and continued.',
+          )
+        } else {
+          toast('error', 'Interview response was empty. Please click Send again.')
+          setIsStreaming(false)
+          setWaitingForParse(false)
+          return
+        }
       }
 
       setCurrentParsedResponse(parsed)
@@ -298,12 +369,11 @@ Keep questions realistic and professional. Vary phrasing naturally. For behavior
         window.api.interviewUpdateSession(session.id, { status: 'completed' })
         onSessionUpdate({ ...session, status: 'completed' })
         window.dispatchEvent(new CustomEvent('interview-session-changed'))
-      } else {
-        setQuestionNumber(n => n + 1)
       }
     })
 
     const unError = window.api.onInterviewStreamError((err: string) => {
+      requestInFlightRef.current = false
       toast('error', `Interview error: ${err}`)
       setIsStreaming(false)
       setWaitingForParse(false)
@@ -341,7 +411,7 @@ Keep questions realistic and professional. Vary phrasing naturally. For behavior
 
   async function handleEndEarly() {
     const answerCount = exchanges.length + messages.filter(m => m.role === 'user').length
-    const status = answerCount < MINI_DEBRIEF_THRESHOLD ? 'completed_early' : 'completed'
+    void (answerCount < MINI_DEBRIEF_THRESHOLD) // reserved for mini-debrief behavior
     await window.api.interviewUpdateSession(session.id, { status: 'completed' })
     onSessionUpdate({ ...session, status: 'completed' })
     setIsComplete(true)
@@ -357,7 +427,7 @@ Keep questions realistic and professional. Vary phrasing naturally. For behavior
           <MessageSquare size={14} className="text-accent" />
           <span className="text-xs font-semibold text-text">Live Feedback</span>
           {!isComplete && (
-            <span className="text-xs text-text-dim">— Question {questionNumber}</span>
+            <span className="text-xs text-text-dim">— Question {currentQuestionNumber}</span>
           )}
           {isComplete && (
             <span className="badge badge-success text-[10px]">Complete</span>

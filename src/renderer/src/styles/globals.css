@@ -64,10 +64,10 @@
   .tiptap-editor .ProseMirror {
     outline: none;
     min-height: 200px;
-    padding: 1rem;
+    padding: 1rem 1.1rem 1.25rem;
     font-family: 'Inter', sans-serif;
     font-size: 14px;
-    line-height: 1.7;
+    line-height: 1.75;
     color: #e8e8e8;
   }
 
@@ -87,7 +87,51 @@
   .tiptap-editor .ProseMirror li { margin: 0.25rem 0; }
   .tiptap-editor .ProseMirror strong { font-weight: 700; }
   .tiptap-editor .ProseMirror em { font-style: italic; }
-  .tiptap-editor .ProseMirror p { margin: 0.5rem 0; }
+  .tiptap-editor .ProseMirror p { margin: 0.55rem 0; }
+
+  .tiptap-editor .ProseMirror.material-resume {
+    max-width: 930px;
+    margin: 0 auto;
+    padding: 1.15rem 1.3rem 2.2rem;
+  }
+  .tiptap-editor .ProseMirror.material-resume h1 {
+    margin-top: 0.2rem;
+    margin-bottom: 0.12rem;
+    text-align: center;
+    font-size: 1.65rem;
+    letter-spacing: 0.015em;
+  }
+  .tiptap-editor .ProseMirror.material-resume h3 {
+    margin-top: 0;
+    margin-bottom: 0.9rem;
+    text-align: center;
+    font-size: 0.95rem;
+    color: #bdbdbd;
+    font-weight: 500;
+  }
+  .tiptap-editor .ProseMirror.material-resume h2 {
+    margin-top: 1.3rem;
+    margin-bottom: 0.45rem;
+    padding-top: 0.3rem;
+    border-top: 1px solid #3a3a3a;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 0.86rem;
+    color: #cfcfcf;
+  }
+  .tiptap-editor .ProseMirror.material-resume p {
+    margin: 0.42rem 0;
+  }
+  .tiptap-editor .ProseMirror.material-resume ul,
+  .tiptap-editor .ProseMirror.material-resume ol {
+    margin: 0.42rem 0 0.72rem;
+  }
+
+  .tiptap-editor .ProseMirror.material-cover_letter p,
+  .tiptap-editor .ProseMirror.material-recruiter_message p {
+    margin: 0.7rem 0;
+    max-width: 90ch;
+  }
 
   /* Drag and drop zone */
   .drag-zone {

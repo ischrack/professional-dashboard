@@ -94,8 +94,11 @@ export function registerLlmHandlers(): void {
     }
 
     let messages = [...req.messages]
+    const systemPrompt = req.experienceLevel
+      ? `${req.systemPrompt}\n\nStudent experience level: ${req.experienceLevel}`
+      : req.systemPrompt
     const contextLimit = getContextLimit(req.model)
-    const totalTokens = totalTokensInMessages(messages, req.systemPrompt)
+    const totalTokens = totalTokensInMessages(messages, systemPrompt)
 
     // Compress if approaching context limit
     if (totalTokens > contextLimit * CONTEXT_COMPRESS_THRESHOLD && messages.length > 4) {
@@ -114,6 +117,6 @@ export function registerLlmHandlers(): void {
       }
     }
 
-    return callLLMDirect(req.provider, req.model, messages, req.systemPrompt, apiKey)
+    return callLLMDirect(req.provider, req.model, messages, systemPrompt, apiKey)
   })
 }

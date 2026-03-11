@@ -37,7 +37,6 @@ export default function FullRunSession({
   const { toast } = useToast()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [answer, setAnswer] = useState('')
-  const [questionNumber, setQuestionNumber] = useState(1)
   const [isStreaming, setIsStreaming] = useState(false)
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null)
   const [debriefText, setDebriefText] = useState(session.debriefText || '')
@@ -52,6 +51,7 @@ export default function FullRunSession({
   const models = (settings.models as Record<string, string>) || {}
   const model = models.interviewResearch || 'claude-sonnet-4-6'
   const provider: 'anthropic' | 'openai' = model.startsWith('gpt') ? 'openai' : 'anthropic'
+  const currentQuestionNumber = messages.filter(m => m.role === 'user').length + 1
 
   useEffect(() => {
     if (exchanges.length > 0) {
@@ -61,7 +61,6 @@ export default function FullRunSession({
         if (ex.answerText) rebuilt.push({ role: 'user', content: ex.answerText })
       }
       setMessages(rebuilt)
-      setQuestionNumber(exchanges.length + 1)
     } else if (session.status !== 'completed') {
       askNextQuestion([])
     }
@@ -143,7 +142,7 @@ Be specific, constructive, and actionable.`
 
     const unDone = window.api.onInterviewChatDone(() => {
       setIsStreaming(false)
-      const content = streamAccRef.current
+      const content = streamAccRef.current.trim()
 
       if (content.includes('[SESSION_COMPLETE]')) {
         const cleanContent = content.replace('[SESSION_COMPLETE]', '').trim()
@@ -154,11 +153,17 @@ Be specific, constructive, and actionable.`
         return
       }
 
+      if (!content) {
+        const fallback = 'Let’s start with your background. Can you briefly introduce yourself and highlight experience relevant to this role?'
+        setMessages(prev => [...prev, { role: 'interviewer' as const, content: fallback }])
+        toast('error', 'Interview response was empty. Using a fallback opener question.')
+        return
+      }
+
       setMessages(prev => {
-        const updated = [...prev, { role: 'interviewer' as const, content: content.trim() }]
+        const updated = [...prev, { role: 'interviewer' as const, content }]
         return updated
       })
-      setQuestionNumber(n => n + 1)
     })
 
     const unError = window.api.onInterviewStreamError((err: string) => {
@@ -261,7 +266,7 @@ Be specific, constructive, and actionable.`
         <div className="flex items-center gap-3">
           <MessageSquare size={14} className="text-accent" />
           <span className="text-xs font-semibold text-text">Full Run</span>
-          {!isComplete && <span className="text-xs text-text-dim">— Question {questionNumber}</span>}
+          {!isComplete && <span className="text-xs text-text-dim">— Question {currentQuestionNumber}</span>}
           {isComplete && <span className="badge badge-success text-[10px]">Complete</span>}
 
           {isComplete && (
